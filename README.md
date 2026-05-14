@@ -45,7 +45,7 @@ cargo build --release
     --predicate memory-safety::oob-write
 
 # 4. Produce a bundle (witness stays private; bundle is publishable).
-./target/release/zkpox-prove \
+./target/release/zkpox-prove prove \
     --target targets/03-libxml2-cve-2017-9047.c \
     --predicate memory-safety::oob-write \
     --witness tests/corpus/03-overflow1-crash.bin \
