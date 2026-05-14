@@ -1,0 +1,20 @@
+[package]
+name = "zkpox-envelope"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AES-256-GCM + age + Drand tlock layered encryption for the bundle's vendor envelope."
+
+[dependencies]
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+aes-gcm     = { workspace = true }
+rand        = { workspace = true }
+secrecy     = { workspace = true }
+zeroize     = { workspace = true }
+age         = { workspace = true }
+tlock_age   = "0.0.8"
+zkpox-schema = { path = "../zkpox-schema" }
+
+[dev-dependencies]
+hex = { workspace = true }

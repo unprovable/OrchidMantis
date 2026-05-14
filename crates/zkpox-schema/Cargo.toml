@@ -1,0 +1,21 @@
+[package]
+name = "zkpox-schema"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bundle schema (CBOR types) and canonical-hash helpers shared by zkpox-prove and zkpox-verify."
+
+[features]
+default = []
+# Enables std-only helpers (file I/O, full hash convenience). Disable
+# for no_std consumers such as the guest crate if it ever depends on us.
+std = []
+
+[dependencies]
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+serde       = { workspace = true }
+serde_bytes = { workspace = true }
+ciborium    = { workspace = true }
+sha2        = { workspace = true }
+hex         = { workspace = true }

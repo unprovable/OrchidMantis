@@ -1,0 +1,32 @@
+[package]
+name = "zkpox-verify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone zkpox verifier: STARK + target binding + envelope + anchor checks."
+
+[[bin]]
+name = "zkpox-verify"
+path = "src/main.rs"
+
+[dependencies]
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+clap               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+ciborium           = { workspace = true }
+sha2               = { workspace = true }
+hex                = { workspace = true }
+
+zkpox-schema             = { path = "../zkpox-schema" }
+zkpox-envelope           = { path = "../zkpox-envelope" }
+zkpox-anchor             = { path = "../zkpox-anchor" }
+zkpox-backend-static-c   = { path = "../zkpox-backend-static-c" }
+zkpox-predicates         = { path = "../zkpox-predicates" }
+
+base64           = { workspace = true }
+ed25519-dalek    = { version = "2" }
+sp1-sdk          = { workspace = true }

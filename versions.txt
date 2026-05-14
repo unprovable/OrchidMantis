@@ -1,0 +1,31 @@
+# Orchid Mantis / zkpox toolchain manifest
+#
+# Pinned to match what produces reproducible artifacts. The SP1 pins
+# are load-bearing: the verifier ships a hard-coded mapping from
+# backend kind/version to the SP1 verifying-key digest that backend
+# produces, and any drift in the SP1 release would break that
+# mapping.
+
+# Rust host toolchain (matches workspace rust-toolchain.toml).
+rust:                 stable (≥ 1.85)
+
+# SP1 (zkVM).
+sp1-zkvm:             6.0.1
+sp1-sdk:              6.0.1
+cargo-prove:          v6.1.0 (succinct rustup channel auto-installed by sp1up)
+
+# Cross-compile toolchain for the freestanding C target.
+clang:                Homebrew LLVM 22.x on macOS; Ubuntu LLVM 18+ on Linux.
+                      Apple's bundled clang lacks the RISC-V backend; the
+                      build.rs picks Homebrew clang explicitly on macOS
+                      and falls back to PATH `clang` elsewhere.
+                      Override via ZKPOX_CLANG env var.
+
+# Envelope / disclosure deps (Rust crates only — no shell-outs).
+age (crate):          0.11      # age vendor recipient encryption
+tlock-age:            checked at first build; if unavailable, vendor a
+                      Drand quicknet HTTP adapter + BLS12-381 pairing
+                      against the published Drand chain hash
+                      (52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971).
+ureq:                 2.10      # Rekor HTTP client
+ed25519-dalek:        2.x       # Rekor STH signature verification

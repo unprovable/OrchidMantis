@@ -1,0 +1,16 @@
+[package]
+name = "zkpox-backend-static-c"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Layer-1 backend: target C source linked into the SP1 guest at build time."
+
+[dependencies]
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+sha2         = { workspace = true }
+hex          = { workspace = true }
+zkpox-schema = { path = "../zkpox-schema" }
+
+[dev-dependencies]
+tempfile = "3"

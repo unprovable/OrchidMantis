@@ -1,0 +1,17 @@
+[package]
+name = "zkpox-predicates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Predicate (violation-gadget) library for zkpox. no_std-friendly so the SP1 guest can pull it in."
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# Intentionally NO serde/ciborium dependency. The predicates encode
+# their outputs as a fixed, hand-rolled wire format (see
+# `outputs::ToWire`) so the guest doesn't have to pull in serde
+# machinery — that saves SP1 cycles. The host re-decodes into
+# ciborium values before populating the bundle.

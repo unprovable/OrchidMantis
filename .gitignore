@@ -1,0 +1,32 @@
+# Cargo build artifacts (workspace + per-crate)
+/target
+/crates/*/target
+
+# Cargo.lock IS committed for binary crates (reproducible builds).
+# Leave it out of the ignore list.
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.swo
+/.idea
+/.vscode
+
+# Scratch dirs
+/tmp
+/out
+/.cache
+
+# Local agent state (not for the repo)
+.claude/
+
+# Generated proof artifacts (loose .proof or .cbor outside the
+# tracked corpus / examples directories).
+*.proof
+/bundle.cbor
+/*.bundle
+
+# Negate the rules for tracked-by-design artifacts.
+!targets/**/*.c
+!witnesses/**/*.bin
+!tests/corpus/**/*.bin

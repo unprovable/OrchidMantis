@@ -1,0 +1,42 @@
+[package]
+name = "zkpox-prove"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone zkpox prover: take target + exploit witness, emit a disclosure bundle."
+
+[[bin]]
+name = "zkpox-prove"
+path = "src/main.rs"
+
+[dependencies]
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+clap               = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde              = { workspace = true }
+serde_bytes        = { workspace = true }
+serde_json         = { workspace = true }
+ciborium           = { workspace = true }
+sha2               = { workspace = true }
+hex                = { workspace = true }
+base64             = { workspace = true }
+
+zkpox-schema             = { path = "../zkpox-schema" }
+zkpox-envelope           = { path = "../zkpox-envelope" }
+zkpox-anchor             = { path = "../zkpox-anchor" }
+zkpox-backend-static-c   = { path = "../zkpox-backend-static-c" }
+zkpox-predicates         = { path = "../zkpox-predicates" }
+
+ed25519-dalek      = { version = "2", features = ["rand_core"] }
+rand_core          = { version = "0.6", features = ["getrandom"] }
+
+# SP1 host SDK. Heavy: pulls Groth16 wrap circuitry on first use.
+# Feature `native-gnark` matches RAPTOR's pin; `blocking` keeps the
+# host single-threaded so we don't need a separate runtime.
+sp1-sdk = { workspace = true }
+
+# Tokio is required to drive `sp1_sdk::install::try_install_circuit_artifacts`,
+# which is an async fn. Single-threaded runtime keeps overhead minimal.
+tokio = { version = "1", features = ["rt", "macros"] }

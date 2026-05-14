@@ -1,0 +1,31 @@
+[package]
+name = "zkpox-guest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The SP1 guest program. Cross-compiled to RISC-V64 via `cargo prove build`; runs inside the SP1 zkVM."
+publish = false
+
+[[bin]]
+name = "zkpox-guest"
+path = "src/main.rs"
+
+# Predicate selection happens at compile time via Cargo features. The
+# `zkpox-prove build-target` driver passes --features <name> to
+# `cargo prove build`. Exactly one of these features must be selected;
+# the guest's `main.rs` static_assert checks that.
+[features]
+default = []
+predicate-crash-only = []
+predicate-oob-write  = []
+
+[dependencies]
+sp1-zkvm        = { version = "6.0.1" }
+zkpox-predicates = { path = "../zkpox-predicates", default-features = false }
+
+[build-dependencies]
+sha2 = { workspace = true }
+# sp1-build is intentionally NOT a build-dep here. The guest is
+# cross-compiled by `cargo prove build` (the prover binary invokes
+# that as a subprocess at runtime); build.rs above only handles the C
+# cross-compile and the target-hash codegen.
