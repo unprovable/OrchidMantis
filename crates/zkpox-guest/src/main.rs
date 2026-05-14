@@ -155,7 +155,10 @@ mod zkvm_main {
     }
 
     pub(crate) fn main() {
-        let witness: alloc::vec::Vec<u8> = sp1_zkvm::io::read::<alloc::vec::Vec<u8>>();
+        // SP1's zkvm environment provides std (with the alloc-via-bump
+        // allocator embedded in sp1-zkvm), so `Vec` resolves through
+        // the prelude — no explicit `extern crate alloc` needed.
+        let witness: Vec<u8> = sp1_zkvm::io::read::<Vec<u8>>();
         let runner = StaticCTarget;
 
         // Compile-time predicate selection. Exactly one feature flag

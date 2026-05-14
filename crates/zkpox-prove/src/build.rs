@@ -143,13 +143,13 @@ pub fn build_or_load(
         .canonicalize()
         .with_context(|| format!("canonicalize target source {:?}", target.source_path))?;
 
-    let manifest = guest_source.join("Cargo.toml");
-
-    // `cargo prove build` shells to SP1's custom `cargo prove`
-    // subcommand. We pass `--manifest-path` so it doesn't need to be
-    // invoked from inside the guest directory. The output ELF lands
-    // at <guest>/elf/<binary-name>; the SDK convention is to find it
-    // there.
+    // `cargo prove build` is SP1's custom subcommand; unlike vanilla
+    // `cargo build` it doesn't accept `--manifest-path` (see the SP1
+    // CLI source). We invoke it from inside the guest crate's
+    // directory instead. The output ELF lands either at
+    // <guest>/elf/<binary-name> or at the cargo target directory
+    // (location varies across SP1 releases — see the candidate list
+    // below).
     tracing::info!(
         guest_source = ?guest_source,
         target = ?abs_target,
@@ -160,10 +160,9 @@ pub fn build_or_load(
     let status = Command::new("cargo")
         .arg("prove")
         .arg("build")
-        .arg("--manifest-path")
-        .arg(&manifest)
         .arg("--features")
         .arg(feature)
+        .current_dir(guest_source)
         .env("ZKPOX_TARGET_C", &abs_target)
         .env("ZKPOX_BUF_SIZE", target.buf_size.to_string())
         .status()
@@ -172,11 +171,23 @@ pub fn build_or_load(
         bail!("cargo prove build failed with status {status:?}");
     }
 
-    // SP1's build emits the ELF at:
-    //   <guest>/elf/<bin-name>  OR
+    // SP1's build emits the ELF at one of three locations depending
+    // on the SP1 release and whether the guest crate has its own
+    // cargo target dir or shares the workspace's:
+    //
+    //   <guest>/elf/<bin-name>
     //   <guest>/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/<bin-name>
-    // Search both — the location has varied across SP1 versions.
-    let candidates = [
+    //   <workspace-root>/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/<bin-name>
+    //
+    // The third path is what SP1 6.0+ uses when the guest is a
+    // workspace member — `cargo prove build` honours the workspace's
+    // shared target directory rather than carving out its own. Search
+    // all three.
+    let workspace_root = guest_source
+        .parent()                       // <workspace>/crates
+        .and_then(|p| p.parent())      // <workspace>
+        .map(|p| p.to_path_buf());
+    let mut candidates = vec![
         guest_source.join("elf").join("zkpox-guest"),
         guest_source
             .join("target")
@@ -185,6 +196,15 @@ pub fn build_or_load(
             .join("release")
             .join("zkpox-guest"),
     ];
+    if let Some(root) = workspace_root {
+        candidates.push(
+            root.join("target")
+                .join("elf-compilation")
+                .join("riscv64im-succinct-zkvm-elf")
+                .join("release")
+                .join("zkpox-guest"),
+        );
+    }
     let elf_src = candidates
         .iter()
         .find(|p| p.is_file())
