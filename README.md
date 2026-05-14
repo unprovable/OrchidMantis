@@ -76,34 +76,46 @@ vulnerability class label — those are operator metadata. See
 
 ## Architecture
 
-```
-                  ┌────────────────────────────────────────────┐
-target source ──> │  Backend (Layer 1/2/3)                     │
-                  │   • Layer 1: static-link C   [WORKING]     │
-                  │   • Layer 2: RV64IM emulator  [STUB]       │
-                  │   • Layer 3: LLVM IR / MicroRAM  [STUB]    │
-                  │     (CHEESECLOTH-style)                    │
-                  └──────────────────────┬─────────────────────┘
-                                         │
-                                         ▼
-                  ┌──────────────────────────────────────────┐
-witness  ────────>│   SP1 guest  ──> STARK proof + public    │
-                  │   (predicate runs against target)         │
-                  │      └─ commits (target_hash, predicate,  │
-                  │         inv_flag, vuln_flag, outputs)     │
-                  └──────────────────────┬───────────────────┘
-                                         │
-                                         ▼
-                  ┌──────────────────────────────────────────┐
-                  │   Bundle assembly:                        │
-                  │     • envelope (AES + age + tlock)        │
-                  │     • Rekor anchor                        │
-                  │     • CBOR encode                         │
-                  └──────────────────────┬───────────────────┘
-                                         │
-                                         ▼
-                                  bundle.cbor
-                                  (publishable)
+```mermaid
+flowchart TD
+    target([target source])
+    witness([witness])
+
+    subgraph backend ["Backend layer"]
+        direction LR
+        l1["<b>Layer 1</b><br/>static-link C<br/><i>WORKING</i>"]
+        l2["<b>Layer 2</b><br/>RV64IM emulator<br/><i>stub</i>"]
+        l3["<b>Layer 3</b><br/>LLVM IR / MicroRAM<br/>CHEESECLOTH-style<br/><i>stub</i>"]
+    end
+
+    subgraph guest ["SP1 guest"]
+        direction TB
+        run["predicate runs against target"]
+        commits["commits public values:<br/>target_hash, predicate,<br/>inv_flag, vuln_flag, outputs"]
+        proof["STARK proof + public values"]
+        run --> commits --> proof
+    end
+
+    subgraph bundle ["Bundle assembly"]
+        direction TB
+        env["envelope<br/>AES-GCM + age + Drand tlock"]
+        anchor["Sigstore Rekor anchor"]
+        cbor["CBOR encode"]
+        env --> anchor --> cbor
+    end
+
+    final[/"bundle.cbor<br/><i>publishable</i>"/]
+
+    target --> backend
+    backend --> guest
+    witness --> guest
+    guest --> bundle
+    bundle --> final
+
+    classDef working fill:#2d6a4f,stroke:#52b788,color:#fff;
+    classDef stub fill:#3a3a3a,stroke:#777,color:#bbb,stroke-dasharray:4 3;
+    class l1 working;
+    class l2,l3 stub;
 ```
 
 ## Documentation
