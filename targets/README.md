@@ -12,6 +12,7 @@ no longer a runtime dispatch over multiple targets.
 | [`01-stack-bof.c`](01-stack-bof.c) | classic stack BOF (no bound check) | — | 16 |
 | [`02-off-by-one.c`](02-off-by-one.c) | textbook off-by-one (`i <= buf_size`) | — | 16 |
 | [`03-libxml2-cve-2017-9047.c`](03-libxml2-cve-2017-9047.c) | libxml2 `xmlSnprintfElementContent` stale-len | [CVE-2017-9047](https://nvd.nist.gov/vuln/detail/CVE-2017-9047) | 32 |
+| [`04-openssl-cve-2016-6303.c`](04-openssl-cve-2016-6303.c) | OpenSSL `MDC2_Update` integer-overflow bound check | [CVE-2016-6303](https://nvd.nist.gov/vuln/detail/CVE-2016-6303) | 8 |
 
 ## Writing your own target
 
