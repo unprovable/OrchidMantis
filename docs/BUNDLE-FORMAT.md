@@ -161,18 +161,29 @@ field requires bumping `PUBLIC_VALUES_VERSION`.
   "inclusion_proof_root_hash":   "<hex>",                       (Text)
   "inclusion_proof_tree_size":   u64,
   "inclusion_proof_hashes":      ["<hex>", "<hex>", ...]        (Array of Text)
+  "signed_entry_timestamp":      "<base64>" | absent            (Text)
 }
 ```
 
-Verifier checks (with network):
+`signed_entry_timestamp` is the Rekor v1 **SET** — base64 of the
+log's own signature over the canonical
+`{body, integratedTime, logIndex, logID}` JSON. Optional: absent on
+self-hosted logs that don't emit one, and on bundles produced before
+this field existed. The verifier also re-fetches it from Rekor at
+verify time, so the field is a convenience cache, not a trust root.
+
+Verifier checks (with network, single fetch):
 
 1. Fetch entry by `rekor_log_index`. Decode its base64 `body`.
 2. Compare the body's `data.hash` to `bundle_hash_pre_timestamp(bundle)`.
 3. Reconstruct the Merkle leaf as `sha256(0x00 || body_bytes)`.
 4. Walk the path via `inclusion_proof_hashes`; verify the result
    matches `inclusion_proof_root_hash`.
-5. (Future) verify the Rekor signed tree head against the log's
-   published ed25519 public key.
+5. If `zkpox-verify --rekor-pubkey <PEM>` is supplied, verify the
+   entry's Signed Entry Timestamp against that key (ECDSA P-256 for
+   the public Sigstore Rekor, or Ed25519 for self-hosted logs). This
+   proves the log endorsed the entry, not just that an inclusion proof
+   reconstructs. Without the key the SET check is skipped.
 
 ## `Researcher`
 

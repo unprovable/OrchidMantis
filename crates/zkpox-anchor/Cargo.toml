@@ -16,3 +16,11 @@ hex         = { workspace = true }
 base64      = { workspace = true }
 ureq        = { workspace = true }
 zkpox-schema = { path = "../zkpox-schema" }
+
+# Rekor SET (Signed Entry Timestamp) verification. The public
+# rekor.sigstore.dev log signs with ECDSA P-256; some self-hosted
+# deployments use Ed25519. We parse the operator-supplied log pubkey
+# PEM (SPKI) and dispatch on key type. Both crates are already in the
+# lock via sp1-sdk, so this adds no new transitive surface.
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+p256          = { version = "0.13", features = ["ecdsa", "pem"] }

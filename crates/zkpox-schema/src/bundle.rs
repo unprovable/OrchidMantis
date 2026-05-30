@@ -157,9 +157,19 @@ pub struct Timestamp {
     /// Merkle path from our entry up to the tree root, hex per node.
     /// Combined with `inclusion_proof_root_hash` and
     /// `inclusion_proof_tree_size`, lets a verifier reconstruct and
-    /// check the path. The signed tree head signature is verified
-    /// against the Rekor instance's published log public key.
+    /// check the path.
     pub inclusion_proof_hashes: Vec<String>,
+    /// Rekor v1 **Signed Entry Timestamp** (SET): base64 of the log's
+    /// own signature over the canonical
+    /// `{body, integratedTime, logIndex, logID}` JSON. Optional —
+    /// older bundles and some self-hosted logs omit it. When present
+    /// and the verifier is handed the log's public key
+    /// (`zkpox-verify --rekor-pubkey`), the SET proves the log itself
+    /// endorsed this entry, closing the "a lying Rekor served us a
+    /// consistent-but-fabricated tree" gap that the inclusion proof
+    /// alone cannot.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signed_entry_timestamp: Option<String>,
 }
 
 /// Researcher attribution. None for anonymous disclosures.
@@ -274,6 +284,7 @@ mod tests {
                 inclusion_proof_root_hash: "r".into(),
                 inclusion_proof_tree_size: 1,
                 inclusion_proof_hashes: vec![],
+                signed_entry_timestamp: None,
             }),
             ..b
         };

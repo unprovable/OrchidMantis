@@ -6,7 +6,7 @@
 //! derived locally from the cached or supplied guest ELF are
 //! rejected.
 //!
-//! ## Verification flow (--strict mode)
+//! ## Verification flow (strict mode — the default)
 //!
 //!   1. Parse CBOR bundle; check `version` matches `BUNDLE_VERSION`.
 //!   2. Structural checks: hash prefixes, fingerprint round-trip,
@@ -22,11 +22,17 @@
 //!      predicate.id_canonical, predicate.version,
 //!      backend.id_canonical, backend.version, plus
 //!      inv_flag = false AND vuln_flag = true.
-//!   6. Rekor anchor: fetch entry by index, confirm recorded hash
-//!      matches `bundle_hash_pre_timestamp`; verify Merkle inclusion
-//!      proof reconstructs `inclusion_proof_root_hash`.
+//!   6. Rekor anchor (single fetch): confirm Rekor's recorded hash
+//!      matches `bundle_hash_pre_timestamp`; verify the Merkle
+//!      inclusion proof reconstructs `inclusion_proof_root_hash`; and,
+//!      when `--rekor-pubkey` is supplied, verify the log's Signed
+//!      Entry Timestamp (SET) signature against that key.
 //!   7. Researcher signature: if present, verify ed25519 signature
 //!      over `bundle_hash_pre_researcher`.
+//!
+//! Strict is the default (matching the disclosure-grade posture): any
+//! check that cannot complete is fatal. `--no-strict` downgrades the
+//! network- or cache-dependent checks to warnings for local triage.
 
 use std::path::PathBuf;
 
@@ -35,7 +41,10 @@ use base64::Engine as _;
 use clap::Parser;
 use serde::Serialize;
 
-use zkpox_anchor::{check_inclusion_proof, check_recorded_hash, rekor_url};
+use zkpox_anchor::{
+    check_inclusion_proof, check_set_signature, entry_recorded_hash, fetch_entry_by_index,
+    rekor_url,
+};
 use zkpox_backend_static_c::{
     cache_key, default_cache_dir, CacheEntry, PredicateSpec, BACKEND_KIND,
     BACKEND_VERSION as STATIC_C_BACKEND_VERSION,
@@ -58,9 +67,16 @@ const SP1_ZKVM_VERSION: &str = "6.0.1";
 struct Cli {
     bundle: PathBuf,
 
-    /// Fail on any deferred or unverifiable check. Recommended for
-    /// real CVD pipelines.
+    /// Downgrade checks that depend on the network or a local ELF
+    /// cache (STARK, Rekor, allowlists) from fatal to warnings. Strict
+    /// is the DEFAULT — pass this only for offline local triage, never
+    /// for a real CVD acceptance gate.
     #[arg(long)]
+    no_strict: bool,
+
+    /// Deprecated: strict is now the default. Kept as a hidden no-op
+    /// alias so existing scripts that pass `--strict` don't break.
+    #[arg(long, hide = true)]
     strict: bool,
 
     /// Emit machine-readable JSON instead of human-readable text.
@@ -74,8 +90,9 @@ struct Cli {
     target: Option<PathBuf>,
 
     /// Whitelist of allowed backend kinds (default: static-c).
-    /// Bundles with backends outside this list are rejected in
-    /// `--strict`.
+    /// Bundles with backends outside this list are rejected in strict
+    /// mode (the default), or downgraded to a warning under
+    /// `--no-strict`.
     #[arg(long, value_delimiter = ',', default_value = "static-c")]
     allow_backend: Vec<String>,
 
@@ -88,10 +105,22 @@ struct Cli {
     #[arg(long)]
     rekor_url: Option<String>,
 
-    /// Skip Rekor inclusion-proof verification. Useful for offline
-    /// validation of bundles whose anchor we don't trust or can't
-    /// reach. The Merkle inclusion check still runs against the
-    /// inclusion proof embedded in the bundle.
+    /// Path to the trusted Rekor log's public key (PEM, SPKI). When
+    /// supplied, the verifier checks the entry's Signed Entry
+    /// Timestamp (SET) signature against this key — proving the log
+    /// itself endorsed the entry, not just that an inclusion proof
+    /// reconstructs. Accepts ECDSA P-256 (public Sigstore Rekor) or
+    /// Ed25519 (some self-hosted logs). Omit to skip the SET check.
+    #[arg(long)]
+    rekor_pubkey: Option<PathBuf>,
+
+    /// Skip all Rekor anchor checks (recorded-hash, Merkle inclusion,
+    /// and SET). Every one needs the entry body fetched from Rekor, so
+    /// offline they report "not run" rather than pass. Useful for
+    /// validating the STARK + structure of a bundle whose anchor we
+    /// can't reach; under strict mode (the default) a present-but-
+    /// unverified timestamp still surfaces, so pair with `--no-strict`
+    /// for a clean offline exit.
     #[arg(long)]
     no_network: bool,
 
@@ -124,6 +153,7 @@ struct VerifySummary {
     public_values_match: Option<bool>,
     rekor_recorded_hash_match: Option<bool>,
     rekor_inclusion_proof_valid: Option<bool>,
+    rekor_set_signature_valid: Option<bool>,
     researcher_signature_valid: Option<bool>,
     envelope_fingerprint_match: Option<bool>,
 
@@ -141,6 +171,22 @@ fn main() -> Result<()> {
         .init();
 
     let args = Cli::parse();
+
+    // Strict is the default; --no-strict opts out. The legacy
+    // --strict flag is a hidden no-op alias.
+    let strict = !args.no_strict;
+    if args.strict {
+        eprintln!("[zkpox] --strict is a no-op: strict is now the default. Use --no-strict to opt out.");
+    }
+
+    // Optional trusted Rekor log public key for SET verification.
+    let rekor_pubkey_pem = match &args.rekor_pubkey {
+        Some(p) => Some(
+            std::fs::read(p).with_context(|| format!("reading --rekor-pubkey {:?}", p))?,
+        ),
+        None => None,
+    };
+
     let bundle_bytes = std::fs::read(&args.bundle)
         .with_context(|| format!("reading bundle {:?}", args.bundle))?;
     let bundle = from_cbor(&bundle_bytes).context("parsing bundle CBOR")?;
@@ -219,7 +265,7 @@ fn main() -> Result<()> {
             "backend.kind {:?} not in --allow-backend list {:?}",
             bundle.backend.kind, args.allow_backend
         );
-        if args.strict {
+        if strict {
             summary.errors.push(msg);
             ok = false;
         } else {
@@ -234,7 +280,7 @@ fn main() -> Result<()> {
             "predicate.id {:?} not in --allow-predicate list {:?}",
             bundle.predicate.id, args.allow_predicate
         );
-        if args.strict {
+        if strict {
             summary.errors.push(msg);
             ok = false;
         } else {
@@ -265,7 +311,7 @@ fn main() -> Result<()> {
     // Layer 1 (static-c) is the only path implemented here. For other
     // backend kinds, we leave stark_verified unset (= None) and warn.
     if BackendKind::from_name(&bundle.backend.kind) == BackendKind::StaticC {
-        match verify_stark(&bundle, args.cache_dir.as_deref(), args.strict) {
+        match verify_stark(&bundle, args.cache_dir.as_deref(), strict) {
             Ok(pv_match) => {
                 summary.stark_verified = Some(true);
                 summary.public_values_match = Some(pv_match);
@@ -279,7 +325,7 @@ fn main() -> Result<()> {
             Err(e) => {
                 summary.stark_verified = Some(false);
                 let msg = format!("STARK verification failed: {e:#}");
-                if args.strict {
+                if strict {
                     summary.errors.push(msg);
                     ok = false;
                 } else {
@@ -293,7 +339,7 @@ fn main() -> Result<()> {
              See docs/ROADMAP.md.",
             bundle.backend.kind
         );
-        if args.strict {
+        if strict {
             summary.errors.push(msg);
             ok = false;
         } else {
@@ -305,27 +351,41 @@ fn main() -> Result<()> {
     if let Some(ts) = &bundle.timestamp {
         // The bundle's `inclusion_proof_hashes` ARE the Merkle path.
         // We need the entry body to compute the leaf hash; the
-        // verifier fetches that from Rekor unless --no-network.
-        match check_anchor(&bundle, ts, args.rekor_url.as_deref(), args.no_network) {
-            Ok((recorded_match, inclusion_ok)) => {
-                summary.rekor_recorded_hash_match = Some(recorded_match);
-                summary.rekor_inclusion_proof_valid = Some(inclusion_ok);
-                if !recorded_match {
+        // verifier fetches that from Rekor (one fetch covers the
+        // recorded-hash, inclusion, and SET checks) unless --no-network.
+        match check_anchor(
+            &bundle,
+            ts,
+            args.rekor_url.as_deref(),
+            args.no_network,
+            rekor_pubkey_pem.as_deref(),
+        ) {
+            Ok(outcome) => {
+                summary.rekor_recorded_hash_match = outcome.recorded_match;
+                summary.rekor_inclusion_proof_valid = outcome.inclusion_ok;
+                summary.rekor_set_signature_valid = outcome.set_valid;
+                if outcome.recorded_match == Some(false) {
                     summary.errors.push(
                         "Rekor's recorded hash does not match bundle_hash_pre_timestamp".into(),
                     );
                     ok = false;
                 }
-                if !inclusion_ok {
+                if outcome.inclusion_ok == Some(false) {
                     summary.errors.push(
                         "Rekor inclusion proof did not reconstruct the bundle's root_hash".into(),
+                    );
+                    ok = false;
+                }
+                if outcome.set_valid == Some(false) {
+                    summary.errors.push(
+                        "Rekor SET signature did not verify against --rekor-pubkey".into(),
                     );
                     ok = false;
                 }
             }
             Err(e) => {
                 let msg = format!("Rekor verification failed: {e:#}");
-                if args.strict {
+                if strict {
                     summary.errors.push(msg);
                     ok = false;
                 } else {
@@ -354,7 +414,7 @@ fn main() -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        print_human(&summary, args.strict);
+        print_human(&summary, strict);
     }
     if !ok {
         std::process::exit(1);
@@ -535,68 +595,85 @@ fn decode_outputs_for_predicate(predicate_id: &str, bytes: &[u8]) -> Option<cibo
 
 // --- Anchor verification ----------------------------------------------
 
+/// Outcome of anchor verification. `None` on a field means the check
+/// was not run (e.g. `--no-network`, or `--rekor-pubkey` was not
+/// supplied for the SET check); `Some(false)` is a hard failure.
+struct AnchorOutcome {
+    recorded_match: Option<bool>,
+    inclusion_ok: Option<bool>,
+    set_valid: Option<bool>,
+}
+
 fn check_anchor(
     bundle: &Bundle,
     ts: &zkpox_schema::Timestamp,
     rekor_override: Option<&str>,
     no_network: bool,
-) -> Result<(bool, bool)> {
+    log_pubkey_pem: Option<&[u8]>,
+) -> Result<AnchorOutcome> {
+    // Every check below needs the Rekor entry body. With --no-network
+    // we can't fetch it, so all three checks report None (not run) —
+    // the bundle's stored proof is taken on trust for offline triage.
+    if no_network {
+        return Ok(AnchorOutcome {
+            recorded_match: None,
+            inclusion_ok: None,
+            set_valid: None,
+        });
+    }
+
+    let url = rekor_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(rekor_url);
+
+    // Single fetch covers all three checks.
+    let (_uuid, entry) = fetch_entry_by_index(&url, ts.rekor_log_index)?;
+
+    // (1) Recorded-hash: Rekor's stored entry hashes the same bytes as
+    //     bundle_hash_pre_timestamp.
     let bundle_hash = sha256_bundle_pre_timestamp(bundle);
-
-    // Recorded-hash check requires network unless `no_network`.
-    let recorded_ok = if no_network {
-        // Skip the recorded-hash check; mark as None at the call site.
-        true
-    } else {
-        let url = rekor_override
-            .map(|s| s.to_string())
-            .unwrap_or_else(rekor_url);
-        check_recorded_hash(bundle, &bundle_hash, &url)
-            .map(|()| true)
-            .or_else(|e| {
-                // Distinguish network errors from cryptographic
-                // mismatches. We treat both as `false` here; the
-                // strict-mode caller surfaces the underlying error
-                // via the warnings list.
-                tracing::warn!("rekor recorded-hash check: {e}");
-                Ok::<bool, anyhow::Error>(false)
-            })?
-    };
-
-    // Inclusion proof check is purely local once we have the entry
-    // body. With --no-network we can't fetch the body; the check
-    // becomes "we trust the bundle's stored body" — which is no check
-    // at all. We report None upstream in that case. For now we fetch
-    // the body if network is allowed.
-    let inclusion_ok = if no_network {
-        true
-    } else {
-        let url = rekor_override
-            .map(|s| s.to_string())
-            .unwrap_or_else(rekor_url);
-        match zkpox_anchor::fetch_entry_by_index(&url, ts.rekor_log_index) {
-            Ok((_uuid, entry)) => {
-                check_inclusion_proof(
-                    &entry.body,
-                    &ts.inclusion_proof_hashes,
-                    ts.inclusion_proof_tree_size,
-                    ts.rekor_log_index,
-                    &ts.inclusion_proof_root_hash,
-                )
-                .map(|()| true)
-                .unwrap_or_else(|e| {
-                    tracing::warn!("inclusion proof: {e}");
-                    false
-                })
-            }
-            Err(e) => {
-                tracing::warn!("rekor fetch entry: {e}");
-                false
-            }
+    let recorded_match = match entry_recorded_hash(&entry) {
+        Ok(recorded) => Some(recorded == hex::encode(bundle_hash)),
+        Err(e) => {
+            tracing::warn!("rekor recorded-hash read: {e}");
+            Some(false)
         }
     };
 
-    Ok((recorded_ok, inclusion_ok))
+    // (2) Merkle inclusion: the audit path walks the leaf up to the
+    //     recorded root (RFC 6962).
+    let inclusion_ok = Some(
+        check_inclusion_proof(
+            &entry.body,
+            &ts.inclusion_proof_hashes,
+            ts.inclusion_proof_tree_size,
+            ts.rekor_log_index,
+            &ts.inclusion_proof_root_hash,
+        )
+        .map(|()| true)
+        .unwrap_or_else(|e| {
+            tracing::warn!("inclusion proof: {e}");
+            false
+        }),
+    );
+
+    // (3) SET signature — only when the operator pinned a log pubkey.
+    let set_valid = match log_pubkey_pem {
+        Some(pem) => match check_set_signature(&entry, ts, pem) {
+            Ok(valid) => Some(valid),
+            Err(e) => {
+                tracing::warn!("rekor SET signature: {e}");
+                Some(false)
+            }
+        },
+        None => None,
+    };
+
+    Ok(AnchorOutcome {
+        recorded_match,
+        inclusion_ok,
+        set_valid,
+    })
 }
 
 // --- Researcher signature ---------------------------------------------
@@ -708,6 +785,10 @@ fn print_human(s: &VerifySummary, strict: bool) {
     println!(
         "  Rekor inclusion proof:      {}",
         opt_str(s.rekor_inclusion_proof_valid)
+    );
+    println!(
+        "  Rekor SET signature:        {}",
+        opt_str(s.rekor_set_signature_valid)
     );
     println!(
         "  researcher signature:       {}",

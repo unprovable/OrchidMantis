@@ -19,18 +19,31 @@
 //! 2. **Merkle inclusion check** (the cryptographic half).
 //!    Reconstruct the Rekor leaf from the entry body, walk up the
 //!    Merkle path stored in the bundle, and check the resulting root
-//!    matches `inclusion_proof_root_hash`. The Rekor signed-tree-head
-//!    (STH) is then verified against the log's published ed25519
-//!    public key.
+//!    matches `inclusion_proof_root_hash`. See [`check_inclusion_proof`].
+//!
+//! 3. **SET (Signed Entry Timestamp) check** (the endorsement half).
+//!    When the operator hands us the log's public key, verify the
+//!    Rekor v1 `signedEntryTimestamp` — the log's own signature over
+//!    the canonical `{body, integratedTime, logIndex, logID}` JSON —
+//!    against that key. The public `rekor.sigstore.dev` signs with
+//!    ECDSA P-256; some self-hosted deployments use Ed25519; we
+//!    dispatch on the PEM key type. See [`verify_set`] /
+//!    [`check_set_signature`]. Without the SET check, the inclusion
+//!    proof's authenticity rests on trusting the Rekor host we talked
+//!    to; the SET removes that assumption — a lying log would have to
+//!    forge its own signature.
 //!
 //! ## What this crate does NOT verify
 //!
 //! - The Rekor instance's identity. If you point us at a malicious
-//!   private Rekor, the anchor binding is only as good as that
-//!   instance. Use the default `https://rekor.sigstore.dev` unless
-//!   you have an explicit reason not to.
-//! - The Sigstore root-of-trust. Phase 1.x will integrate sigstore-rs
-//!   for full TUF-rooted verification; here we use a pinned log key.
+//!   private Rekor without supplying its public key, the anchor
+//!   binding is only as good as that instance. Use the default
+//!   `https://rekor.sigstore.dev` unless you have an explicit reason
+//!   not to, and pass `--rekor-pubkey` to pin the trust anchor.
+//! - The Sigstore root-of-trust. A later phase will integrate
+//!   sigstore-rs for full TUF-rooted distribution of the log key; for
+//!   now the operator supplies the log pubkey PEM they want to trust
+//!   (the Rekor v2 witness-cosignature path lands with that work).
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -72,6 +85,14 @@ pub enum AnchorError {
     #[error("base64 decode of rekor body: {0}")]
     Base64(String),
 
+    /// A malformed SET input — unparseable log pubkey PEM, unsupported
+    /// key type, or a signature that doesn't even decode. Distinct
+    /// from "the signature verified as invalid", which is `Ok(false)`
+    /// from [`verify_set`]: that's the "log signed something else"
+    /// case the caller must surface separately from a malformed proof.
+    #[error("rekor SET signature: {0}")]
+    SetSignature(String),
+
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -108,6 +129,11 @@ pub struct RekorEntry {
 pub struct RekorVerification {
     #[serde(rename = "inclusionProof", default)]
     pub inclusion_proof: Option<RekorInclusionProof>,
+    /// Rekor v1 Signed Entry Timestamp — base64 of the log's signature
+    /// over the canonical entry payload. Absent on some self-hosted
+    /// deployments; present on `rekor.sigstore.dev`.
+    #[serde(rename = "signedEntryTimestamp", default)]
+    pub signed_entry_timestamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -311,6 +337,7 @@ fn build_timestamp(uuid: &str, entry: &RekorEntry) -> Result<zkpox_schema::Times
         inclusion_proof_root_hash: inc.root_hash.clone(),
         inclusion_proof_tree_size: inc.tree_size,
         inclusion_proof_hashes: inc.hashes.clone(),
+        signed_entry_timestamp: v.signed_entry_timestamp.clone(),
     })
 }
 
@@ -448,6 +475,153 @@ fn hex_to_32(s: &str) -> Option<[u8; 32]> {
     Some(out)
 }
 
+// --- SET (Signed Entry Timestamp) verification -------------------------
+//
+// Rekor v1 returns a `signedEntryTimestamp` (SET) inside each
+// response's `verification` block: the log's own signature over a
+// canonical JSON of the entry's `body` + `integratedTime` +
+// `logIndex` + `logID`. The Merkle inclusion proof says "this leaf is
+// in a tree with root R"; the SET says "the log *endorsed* this entry
+// at this time." Together they rule out a Rekor instance lying about
+// what its tree contains — to forge an entry it would have to forge
+// the signature too.
+//
+// Rekor v2 carries the same intent via a signed checkpoint with
+// witness cosignatures; that path lands with the Sigstore TUF
+// integration that distributes the witness key set.
+
+/// Read the hash Rekor recorded for an already-fetched entry — the
+/// `spec.data.hash.value` of its `hashedrekord` body. Lets the
+/// verifier perform the recorded-hash check, the inclusion check, and
+/// the SET check from a single fetch rather than three round-trips.
+pub fn entry_recorded_hash(entry: &RekorEntry) -> Result<String> {
+    let body_bytes = base64::engine::general_purpose::STANDARD
+        .decode(entry.body.as_bytes())
+        .map_err(|e| AnchorError::Base64(e.to_string()))?;
+    let body: RekorBody = serde_json::from_slice(&body_bytes)?;
+    Ok(body.spec.data.hash.value)
+}
+
+/// Build the canonical JSON payload Rekor v1 signs for its SET.
+///
+/// Per the Sigstore Rekor v1 SET construction, the signed bytes are
+/// the JSON object
+///
+/// ```text
+/// {"body":<base64 entry body>,"integratedTime":<unix secs>,"logID":<hex>,"logIndex":<n>}
+/// ```
+///
+/// with keys in lexicographic order and compact separators (no
+/// whitespace) — exactly what Rekor's Go `jsoncanonicalizer` emits.
+/// We build the string by hand in sorted key order rather than via a
+/// serde map so the byte layout is independent of any
+/// `serde_json/preserve_order` feature unification in the workspace.
+/// A golden test pins the bytes against drift.
+pub fn canonical_set_payload(
+    entry_body_b64: &str,
+    integrated_time: i64,
+    log_index: u64,
+    log_id: &str,
+) -> Vec<u8> {
+    // serde_json::to_string on a &str yields a correctly-quoted,
+    // correctly-escaped JSON string literal (base64 `+`/`/`/`=` and
+    // hex need no escaping, but this is robust regardless).
+    let body = serde_json::to_string(entry_body_b64).expect("encode body string");
+    let log = serde_json::to_string(log_id).expect("encode logID string");
+    // Sorted keys: body < integratedTime < logID < logIndex.
+    format!(
+        "{{\"body\":{body},\"integratedTime\":{integrated_time},\"logID\":{log},\"logIndex\":{log_index}}}"
+    )
+    .into_bytes()
+}
+
+/// Verify a Rekor v1 SET signature against the operator-trusted log
+/// public key.
+///
+/// Accepts both algorithm families Rekor v1 actually uses:
+///   - **ECDSA P-256 / SHA-256** — the public `rekor.sigstore.dev`.
+///     Rekor emits the signature ASN.1/DER-encoded; we try DER first,
+///     then a fixed 64-byte `r || s` as a fallback.
+///   - **Ed25519** — some self-hosted deployments / older keys.
+///
+/// The PEM key type drives the dispatch. Returns `Ok(true)` iff the
+/// signature verifies, `Ok(false)` if it parses but verifies as
+/// invalid (the "log signed something else" case), and
+/// `Err(SetSignature)` on a malformed input (unparseable PEM,
+/// unsupported key type, undecodable signature).
+pub fn verify_set(
+    canonical_payload: &[u8],
+    signature: &[u8],
+    log_pubkey_pem: &[u8],
+) -> Result<bool> {
+    let pem = std::str::from_utf8(log_pubkey_pem)
+        .map_err(|e| AnchorError::SetSignature(format!("log pubkey PEM is not UTF-8: {e}")))?;
+
+    // Ed25519 first — its SPKI is a fixed, unmistakable shape, so a
+    // successful parse is unambiguous.
+    {
+        use ed25519_dalek::pkcs8::DecodePublicKey;
+        use ed25519_dalek::Verifier;
+        if let Ok(vk) = ed25519_dalek::VerifyingKey::from_public_key_pem(pem) {
+            let sig = ed25519_dalek::Signature::from_slice(signature).map_err(|e| {
+                AnchorError::SetSignature(format!("ed25519 signature is not 64 bytes: {e}"))
+            })?;
+            return Ok(vk.verify(canonical_payload, &sig).is_ok());
+        }
+    }
+
+    // ECDSA P-256 — the public Sigstore Rekor. Verification hashes the
+    // payload with SHA-256 internally.
+    {
+        use p256::ecdsa::signature::Verifier;
+        use p256::pkcs8::DecodePublicKey;
+        if let Ok(vk) = p256::ecdsa::VerifyingKey::from_public_key_pem(pem) {
+            let sig = p256::ecdsa::Signature::from_der(signature)
+                .or_else(|_| p256::ecdsa::Signature::from_slice(signature))
+                .map_err(|e| {
+                    AnchorError::SetSignature(format!("ECDSA P-256 signature parse: {e}"))
+                })?;
+            return Ok(vk.verify(canonical_payload, &sig).is_ok());
+        }
+    }
+
+    Err(AnchorError::SetSignature(
+        "unsupported log public key: PEM did not parse as Ed25519 or ECDSA P-256".to_string(),
+    ))
+}
+
+/// End-to-end SET check for an already-fetched entry: rebuild the
+/// canonical payload from the entry + the bundle's `Timestamp`,
+/// base64-decode the entry's `signedEntryTimestamp`, and verify it
+/// against `log_pubkey_pem`.
+///
+/// `Err(Missing)` if the operator asked for SET verification but the
+/// log returned no SET; `Err(SetSignature)` on malformed inputs;
+/// `Ok(false)` if the signature verifies as invalid; `Ok(true)` on
+/// success.
+pub fn check_set_signature(
+    entry: &RekorEntry,
+    ts: &zkpox_schema::Timestamp,
+    log_pubkey_pem: &[u8],
+) -> Result<bool> {
+    let set_b64 = entry
+        .verification
+        .as_ref()
+        .and_then(|v| v.signed_entry_timestamp.as_deref())
+        .or(ts.signed_entry_timestamp.as_deref())
+        .ok_or(AnchorError::Missing("verification.signedEntryTimestamp"))?;
+    let sig = base64::engine::general_purpose::STANDARD
+        .decode(set_b64.as_bytes())
+        .map_err(|e| AnchorError::SetSignature(format!("signedEntryTimestamp not base64: {e}")))?;
+    let canonical = canonical_set_payload(
+        &entry.body,
+        ts.integrated_time,
+        ts.rekor_log_index,
+        &ts.rekor_log_id,
+    );
+    verify_set(&canonical, &sig, log_pubkey_pem)
+}
+
 // --- Tests --------------------------------------------------------------
 
 #[cfg(test)]
@@ -517,6 +691,71 @@ mod tests {
             &"f".repeat(64), // wrong root
         );
         assert!(matches!(res, Err(AnchorError::InclusionMismatch { .. })));
+    }
+
+    // --- SET (Signed Entry Timestamp) ---------------------------------
+
+    #[test]
+    fn canonical_set_payload_is_sorted_and_compact() {
+        // Golden vector. Keys MUST be lexicographically ordered
+        // (body, integratedTime, logID, logIndex) with no whitespace —
+        // byte-for-byte what Rekor's Go canonicalizer signs.
+        let p = canonical_set_payload("Ym9keQ==", 1_700_000_000, 42, "abc123");
+        assert_eq!(
+            p,
+            br#"{"body":"Ym9keQ==","integratedTime":1700000000,"logID":"abc123","logIndex":42}"#
+                .to_vec(),
+        );
+    }
+
+    #[test]
+    fn verify_set_round_trip_ed25519() {
+        use ed25519_dalek::pkcs8::EncodePublicKey;
+        use ed25519_dalek::Signer;
+
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let pem = sk
+            .verifying_key()
+            .to_public_key_pem(Default::default())
+            .unwrap();
+        let payload = canonical_set_payload("Ym9keQ==", 1_700_000_000, 1, "logid");
+        let sig = sk.sign(&payload);
+
+        // Genuine signature verifies.
+        assert!(verify_set(&payload, &sig.to_bytes(), pem.as_bytes()).unwrap());
+        // Signature over a *different* payload verifies as invalid
+        // (Ok(false), not Err — the log signed something else).
+        let other = canonical_set_payload("Ym9keQ==", 1_700_000_001, 1, "logid");
+        assert!(!verify_set(&other, &sig.to_bytes(), pem.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn verify_set_round_trip_p256_der() {
+        use p256::ecdsa::signature::Signer;
+        use p256::pkcs8::EncodePublicKey;
+
+        // ECDSA over P-256 is RFC-6979 deterministic, so a fixed key
+        // gives a reproducible signature with no RNG.
+        let sk = p256::ecdsa::SigningKey::from_slice(&[0x11u8; 32]).unwrap();
+        let pem = sk
+            .verifying_key()
+            .to_public_key_pem(Default::default())
+            .unwrap();
+        let payload = canonical_set_payload("Ym9keQ==", 1_700_000_000, 7, "logid");
+        let sig: p256::ecdsa::Signature = sk.sign(&payload);
+        let der = sig.to_der();
+
+        // Rekor's wire form is DER-encoded.
+        assert!(verify_set(&payload, der.as_bytes(), pem.as_bytes()).unwrap());
+        // Wrong payload → invalid.
+        let other = canonical_set_payload("Ym9keQ==", 999, 7, "logid");
+        assert!(!verify_set(&other, der.as_bytes(), pem.as_bytes()).unwrap());
+    }
+
+    #[test]
+    fn verify_set_rejects_garbage_pem() {
+        let r = verify_set(b"payload", b"sig", b"-----BEGIN PUBLIC KEY-----\nnope\n-----END PUBLIC KEY-----\n");
+        assert!(matches!(r, Err(AnchorError::SetSignature(_))));
     }
 }
 

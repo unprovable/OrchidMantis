@@ -52,8 +52,12 @@ cargo build --release
     --wrap groth16 \
     --output /tmp/bundle.cbor
 
-# 5. Verify it.
-./target/release/zkpox-verify /tmp/bundle.cbor --strict
+# 5. Verify it. Strict is the default; every check must complete.
+./target/release/zkpox-verify /tmp/bundle.cbor
+
+# Optionally pin the Rekor log's public key to also verify the
+# Signed Entry Timestamp (proves the log endorsed the entry):
+./target/release/zkpox-verify /tmp/bundle.cbor --rekor-pubkey rekor.pub.pem
 ```
 
 ## What this proves
@@ -137,7 +141,8 @@ zkpox was extracted from
 and rebuilt as a standalone framework. It retains the predicate-library
 abstraction and the disclosure-envelope design from that PR, but the
 binding hashes are no longer placeholders, the verifier actually
-verifies the STARK and the Rekor inclusion proof, and the C-source
+verifies the STARK, the Rekor inclusion proof, and (given the log's
+public key) the Rekor Signed Entry Timestamp, and the C-source
 target is generic rather than three hardcoded examples.
 
 ## Acknowledgements
