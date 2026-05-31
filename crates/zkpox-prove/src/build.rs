@@ -6,7 +6,6 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 
 use zkpox_backend_static_c::{
     cache_key, default_cache_dir, predicate_feature, CacheEntry, PredicateSpec, TargetSpec,

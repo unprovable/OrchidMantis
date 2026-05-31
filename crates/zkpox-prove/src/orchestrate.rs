@@ -218,7 +218,12 @@ pub(crate) struct ParsedPublicValues {
     pub target_hash: [u8; 32],
     pub predicate_id: u32,
     pub predicate_version: u32,
+    // Parsed to keep the public-values read order correct; the prover
+    // binds the backend identity from its own BuiltBackend, so these
+    // two are not read back here.
+    #[allow(dead_code)]
     pub backend_id: u32,
+    #[allow(dead_code)]
     pub backend_version: u32,
     pub inv_flag: bool,
     pub vuln_flag: bool,
@@ -364,6 +369,7 @@ fn build_bundle(
     envelope: Option<&zkpox_envelope::Envelope>,
     target_hash_hex: &str,
 ) -> Result<Bundle> {
+    use crate::cli::Wrap;
     use zkpox_schema::{
         Backend as SchemaBackend, Predicate as SchemaPredicate, Proof as SchemaProof,
         Target as SchemaTarget, VendorEnvelope,
@@ -417,6 +423,15 @@ fn build_bundle(
         system: args.wrap.system_label().to_string(),
         bytes: ByteBuf::from(proof_bytes.to_vec()),
         public_values: ByteBuf::from(public_values_bytes.to_vec()),
+        // For wrapped proofs (groth16), record the program vkey hash in
+        // `vk.bytes32()` form so a verifier can run the lightweight
+        // groth16 check without the guest ELF. It is the same 32 bytes
+        // as `verifier_key_digest`, re-encoded as `0x`+hex. Omitted for
+        // the core wrap, which is verified via the ELF anyway.
+        sp1_vkey_hash: match args.wrap {
+            Wrap::Groth16 => Some(format!("0x{}", backend.vk_digest_hex)),
+            Wrap::Core => None,
+        },
     };
     let vendor_envelope = match envelope {
         Some(env) => VendorEnvelope {

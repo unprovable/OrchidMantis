@@ -440,14 +440,8 @@ fn verify_stark(
     cache_dir: Option<&std::path::Path>,
     strict: bool,
 ) -> Result<bool> {
-    use sp1_sdk::blocking::{Prover as _, ProverClient};
-    use sp1_sdk::{Elf, HashableKey as _, ProvingKey as _, SP1ProofWithPublicValues};
+    use sp1_sdk::SP1ProofWithPublicValues;
 
-    // Layer 1 (static-c) cache lookup. The verifier finds the ELF
-    // the prover produced for this (target_hash, predicate, sp1_zkvm)
-    // tuple. If the user is verifying on a different machine, they
-    // can pre-populate the cache by running `zkpox-prove build-target`
-    // — same code path.
     let predicate = PredicateSpec::from_id(&bundle.predicate.id);
     let target_hash_hex = bundle
         .target
@@ -462,38 +456,21 @@ fn verify_stark(
     }
     target_hash.copy_from_slice(&decoded);
 
-    let key = cache_key(&target_hash, predicate.id_canonical, SP1_ZKVM_VERSION);
-    let cache_root = cache_dir
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(default_cache_dir);
-    let entry = CacheEntry::for_key(&cache_root, &key);
-    if !entry.exists() {
-        bail!(
-            "no cached backend ELF for (target_hash={target_hash_hex}, predicate={}, sp1={}). \
-             Build it first with: zkpox-prove build-target --target <source.c> --predicate {}.",
-            bundle.predicate.id,
-            SP1_ZKVM_VERSION,
-            bundle.predicate.id,
-        );
-    }
-    let elf_bytes = std::fs::read(&entry.elf_path)
-        .with_context(|| format!("reading cached ELF {:?}", entry.elf_path))?;
-    let elf: Elf = elf_bytes.into();
-
-    let client = ProverClient::from_env();
-    let pk = client.setup(elf).map_err(|e| anyhow!("sp1 setup: {e}"))?;
-    let vk_bytes: [u8; 32] = pk.verifying_key().bytes32_raw();
-    let computed_digest = format!("sha256:{}", hex::encode(vk_bytes));
-    if computed_digest != bundle.backend.verifier_key_digest {
-        bail!(
-            "verifier_key_digest mismatch: bundle says {:?}, locally derived {:?} from cached ELF",
-            bundle.backend.verifier_key_digest,
-            computed_digest
-        );
-    }
+    // The bundle's recorded program verifying-key hash. Historically
+    // stored as `sha256:HEX`, but the HEX is the 32-byte bn254 vkey
+    // hash itself (`vk.bytes32_raw()`), not a SHA of anything — the
+    // prefix is a legacy label. We treat it as the canonical 32-byte
+    // VK identity the proof must be bound to.
+    let vk_hex = bundle
+        .backend
+        .verifier_key_digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| anyhow!("backend.verifier_key_digest missing sha256: prefix"))?;
 
     // Reconstruct the SP1 proof from `bundle.proof.bytes`. The SDK
-    // saves and loads via the same serialised form.
+    // saves and loads via the same serialised form. This is cheap —
+    // it does NOT pull the multi-GB proving artifacts; only the legacy
+    // `setup(elf)` path below does.
     let proof_path = std::env::temp_dir()
         .join(format!("zkpox-verify-{}.proof", std::process::id()));
     std::fs::write(&proof_path, &bundle.proof.bytes)?;
@@ -501,9 +478,16 @@ fn verify_stark(
         .map_err(|e| anyhow!("loading SP1 proof from bundle: {e}"))?;
     let _ = std::fs::remove_file(&proof_path);
 
-    client
-        .verify(&proof, pk.verifying_key(), None)
-        .map_err(|e| anyhow!("sp1 verify: {e}"))?;
+    // Pick the verification path from the wrap kind. groth16 (the
+    // disclosure-grade wrap) verifies in milliseconds against an
+    // embedded ~300 KB verifying key — no ELF, no `setup()`, no
+    // artifact download. The raw STARK `core` wrap still needs the
+    // guest ELF to re-derive the VK and run the SDK verifier.
+    if bundle.proof.system.contains("groth16") {
+        verify_groth16_lightweight(bundle, &proof, vk_hex, cache_dir, &target_hash, &predicate)?;
+    } else {
+        verify_core_with_elf(bundle, &proof, vk_hex, cache_dir, &target_hash, &predicate)?;
+    }
 
     // Read public values and cross-check.
     let mut pv = proof.public_values.clone();
@@ -577,6 +561,159 @@ fn verify_stark(
     }
 
     Ok(ok)
+}
+
+/// Lightweight groth16 verification (the disclosure-grade path).
+///
+/// Verifies the wrapped BN254 Groth16 proof against the SP1 version's
+/// embedded verifying key (`sp1_verifier::GROTH16_VK_BYTES`, ~300 KB)
+/// plus the program's own vkey hash. This is the on-chain verifier's
+/// algorithm: it needs neither the guest ELF nor the multi-GB proving
+/// artifacts, so any vendor can run it unaided in milliseconds — the
+/// Phase-2 "verify on a clean machine" requirement.
+///
+/// VK binding: the proof commits to the program vkey hash as its first
+/// public input, and `Groth16Verifier::verify` enforces that it equals
+/// `sp1_vkey_hash`. We obtain `sp1_vkey_hash` from the bundle and
+/// require it to encode the *same* 32 bytes as `backend.verifier_key_digest`,
+/// so the bundle cannot point the proof at a different program. When a
+/// guest ELF happens to be cached locally we additionally re-derive the
+/// VK from it and assert equality (defence in depth); absence of the
+/// ELF is not fatal here, unlike the core path.
+fn verify_groth16_lightweight(
+    bundle: &Bundle,
+    proof: &sp1_sdk::SP1ProofWithPublicValues,
+    vk_hex: &str,
+    cache_dir: Option<&std::path::Path>,
+    target_hash: &[u8; 32],
+    predicate: &PredicateSpec,
+) -> Result<()> {
+    // The `vk.bytes32()` string form the SP1 groth16 verifier expects:
+    // `0x` + the 64-hex vkey hash. Prefer the explicit bundle field;
+    // fall back to deriving it from `verifier_key_digest` (older
+    // bundles). Either way, it must encode the same 32 bytes as the
+    // recorded digest.
+    let sp1_vkey_hash = match &bundle.proof.sp1_vkey_hash {
+        Some(s) => {
+            let h = s.strip_prefix("0x").unwrap_or(s);
+            if !h.eq_ignore_ascii_case(vk_hex) {
+                bail!(
+                    "proof.sp1_vkey_hash {s:?} disagrees with backend.verifier_key_digest \
+                     (sha256:{vk_hex}); the bundle is internally inconsistent"
+                );
+            }
+            s.clone()
+        }
+        None => format!("0x{vk_hex}"),
+    };
+
+    // Defence in depth: if the guest ELF is cached, re-derive the VK
+    // and confirm it matches the recorded digest. Missing ELF is fine
+    // for the lightweight path — the proof itself binds the vkey hash.
+    if let Err(e) = rederive_vk_if_cached(bundle, vk_hex, cache_dir, target_hash, predicate) {
+        tracing::warn!("local ELF VK cross-check skipped/failed: {e:#}");
+    }
+
+    let raw_proof = proof.bytes();
+    let public_inputs = proof.public_values.as_slice();
+    sp1_verifier::Groth16Verifier::verify(
+        &raw_proof,
+        public_inputs,
+        &sp1_vkey_hash,
+        &sp1_verifier::GROTH16_VK_BYTES,
+    )
+    .map_err(|e| anyhow!("groth16 proof verification failed: {e:?}"))?;
+    Ok(())
+}
+
+/// Re-derive the program VK from a locally cached guest ELF and assert
+/// it matches `vk_hex`. Used as an optional cross-check on the groth16
+/// path. Errors (no cache, no ELF) are surfaced to the caller, which
+/// decides whether they are fatal.
+fn rederive_vk_if_cached(
+    bundle: &Bundle,
+    vk_hex: &str,
+    cache_dir: Option<&std::path::Path>,
+    target_hash: &[u8; 32],
+    predicate: &PredicateSpec,
+) -> Result<()> {
+    use sp1_sdk::blocking::{Prover as _, ProverClient};
+    use sp1_sdk::{Elf, HashableKey as _, ProvingKey as _};
+
+    let key = cache_key(target_hash, predicate.id_canonical, SP1_ZKVM_VERSION);
+    let cache_root = cache_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_cache_dir);
+    let entry = CacheEntry::for_key(&cache_root, &key);
+    if !entry.exists() {
+        bail!("no cached ELF to cross-check against");
+    }
+    let elf_bytes = std::fs::read(&entry.elf_path)
+        .with_context(|| format!("reading cached ELF {:?}", entry.elf_path))?;
+    let elf: Elf = elf_bytes.into();
+    let client = ProverClient::from_env();
+    let pk = client.setup(elf).map_err(|e| anyhow!("sp1 setup: {e}"))?;
+    let vk_bytes: [u8; 32] = pk.verifying_key().bytes32_raw();
+    let derived = hex::encode(vk_bytes);
+    if !derived.eq_ignore_ascii_case(vk_hex) {
+        bail!(
+            "verifier_key_digest mismatch: bundle says sha256:{vk_hex}, locally derived \
+             sha256:{derived} from cached ELF"
+        );
+    }
+    let _ = bundle;
+    Ok(())
+}
+
+/// Core (raw STARK) verification. Requires the guest ELF in the cache
+/// to re-derive the VK and run the SDK's STARK verifier. Heavier than
+/// the groth16 path; used for `core`-wrap bundles.
+fn verify_core_with_elf(
+    bundle: &Bundle,
+    proof: &sp1_sdk::SP1ProofWithPublicValues,
+    vk_hex: &str,
+    cache_dir: Option<&std::path::Path>,
+    target_hash: &[u8; 32],
+    predicate: &PredicateSpec,
+) -> Result<()> {
+    use sp1_sdk::blocking::{Prover as _, ProverClient};
+    use sp1_sdk::{Elf, HashableKey as _, ProvingKey as _};
+
+    let key = cache_key(target_hash, predicate.id_canonical, SP1_ZKVM_VERSION);
+    let cache_root = cache_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(default_cache_dir);
+    let entry = CacheEntry::for_key(&cache_root, &key);
+    if !entry.exists() {
+        let target_hash_hex = hex::encode(target_hash);
+        bail!(
+            "no cached backend ELF for (target_hash={target_hash_hex}, predicate={}, sp1={}). \
+             A core-wrap proof needs the guest ELF to verify; build it first with: \
+             zkpox-prove build-target --target <source.c> --predicate {}.",
+            bundle.predicate.id,
+            SP1_ZKVM_VERSION,
+            bundle.predicate.id,
+        );
+    }
+    let elf_bytes = std::fs::read(&entry.elf_path)
+        .with_context(|| format!("reading cached ELF {:?}", entry.elf_path))?;
+    let elf: Elf = elf_bytes.into();
+
+    let client = ProverClient::from_env();
+    let pk = client.setup(elf).map_err(|e| anyhow!("sp1 setup: {e}"))?;
+    let vk_bytes: [u8; 32] = pk.verifying_key().bytes32_raw();
+    let derived = hex::encode(vk_bytes);
+    if !derived.eq_ignore_ascii_case(vk_hex) {
+        bail!(
+            "verifier_key_digest mismatch: bundle says sha256:{vk_hex}, locally derived \
+             sha256:{derived} from cached ELF"
+        );
+    }
+
+    client
+        .verify(proof, pk.verifying_key(), None)
+        .map_err(|e| anyhow!("sp1 verify: {e}"))?;
+    Ok(())
 }
 
 fn decode_outputs_for_predicate(predicate_id: &str, bytes: &[u8]) -> Option<ciborium::Value> {

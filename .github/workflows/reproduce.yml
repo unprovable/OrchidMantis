@@ -1,0 +1,55 @@
+# Phase 2.5 — Continuous reproducibility.
+#
+# On every push / PR, rebuild the guest from the pinned toolchain on a
+# clean runner and assert the verifying-key digest comes out identical
+# to the one the disclosure bundle records, then verify the committed
+# example bundle via the lightweight groth16 path.
+#
+# This is the machine-checked form of Phase 2's "done when": a third
+# party on a clean machine reproduces verifier_key_digest byte-for-byte
+# and verifies unaided. The runner IS that clean machine.
+#
+# The heavy groth16 *prove* is deliberately NOT here — see prove.yml
+# (manual). This job only builds + verifies, so it stays fast and cheap.
+
+name: reproduce
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Reproducibility is path-sensitive; cancel superseded runs.
+concurrency:
+  group: reproduce-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproduce-vk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the reproducible toolchain image. This compiles
+      # zkpox-prove/zkpox-verify against the committed Cargo.lock and
+      # installs the pinned SP1 + clang toolchain.
+      - name: Build reproduce image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/reproduce/Dockerfile
+          tags: zkpox-reproduce:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Run the assertion: build-target -> VK must equal the pinned
+      # digest, then verify the committed example bundle. Any drift
+      # exits non-zero and fails the job.
+      - name: Reproduce VK + verify bundle
+        run: docker run --rm zkpox-reproduce:ci

@@ -120,6 +120,15 @@ pub struct Proof {
     /// Re-derived from `proof.bytes` at verify time and compared for
     /// equality; mismatch is a hard error.
     pub public_values: ByteBuf,
+    /// The SP1 program verifying-key hash in `vk.bytes32()` form
+    /// (`0x`-prefixed hex). Present for wrapped proofs (groth16/plonk)
+    /// so the verifier can run the lightweight on-chain-style check
+    /// (`sp1_verifier::Groth16Verifier`) without rebuilding the guest
+    /// ELF. Cross-checked against `backend.verifier_key_digest`
+    /// (`sha256` of the same 32 bytes) so it cannot lie. Older bundles
+    /// and `core`-wrap proofs omit it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sp1_vkey_hash: Option<String>,
 }
 
 /// AES-256-GCM(witness, K) || age(K, vendor) || tlock(K, drand-future).
@@ -248,6 +257,7 @@ mod tests {
                 system: "sp1-stark-core/v6.1.0".into(),
                 bytes: ByteBuf::from(vec![1, 2, 3]),
                 public_values: ByteBuf::from(vec![9, 9, 9]),
+                sp1_vkey_hash: None,
             },
             vendor_envelope: VendorEnvelope {
                 scheme: ENVELOPE_SCHEME.into(),
