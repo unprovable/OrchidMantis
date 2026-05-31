@@ -129,6 +129,15 @@ struct Cli {
     /// reference VK digest.
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+
+    /// Re-fetch and re-check the bundle's recorded trust sources over
+    /// the network: the vendor key from `vendor_key_source_url`, and the
+    /// researcher key from `researcher.identity_url`. Without this flag
+    /// the verifier validates only what the bundle records (offline);
+    /// with it, the recorded keys are confirmed against their published
+    /// sources. Needs network.
+    #[arg(long)]
+    online: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -153,6 +162,24 @@ struct VerifySummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     target_provenance: Option<serde_json::Value>,
 
+    /// Where the vendor key was resolved from (`vendor_key_source_url` +
+    /// method), surfaced so a reviewer can trace the recipient to a
+    /// published source. None when the key was supplied raw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor_key_source: Option<String>,
+    /// Where the researcher's identity key is published
+    /// (`researcher.identity_url`). None for a bare key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    researcher_identity_url: Option<String>,
+    /// Time-lock summary: the Drand target round + chain, surfaced from
+    /// the envelope. None when there is no envelope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timelock: Option<String>,
+    /// Which Rekor log key the SET check trusted: `"pinned-sigstore"`
+    /// (the vendored default) or `"--rekor-pubkey"` (operator override).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rekor_key_source: Option<String>,
+
     structural_checks_passed: bool,
     target_rehash_match: Option<bool>,
     stark_verified: Option<bool>,
@@ -162,6 +189,12 @@ struct VerifySummary {
     rekor_set_signature_valid: Option<bool>,
     researcher_signature_valid: Option<bool>,
     envelope_fingerprint_match: Option<bool>,
+    /// `--online` re-check: the key published at `vendor_key_source_url`
+    /// still equals `vendor_pubkey`. None when not run.
+    vendor_key_source_match: Option<bool>,
+    /// `--online` re-check: the key published at `researcher.identity_url`
+    /// still equals `researcher.pubkey`. None when not run.
+    researcher_identity_match: Option<bool>,
 
     overall_ok: bool,
     errors: Vec<String>,
@@ -185,12 +218,21 @@ fn main() -> Result<()> {
         eprintln!("[zkpox] --strict is a no-op: strict is now the default. Use --no-strict to opt out.");
     }
 
-    // Optional trusted Rekor log public key for SET verification.
-    let rekor_pubkey_pem = match &args.rekor_pubkey {
-        Some(p) => Some(
-            std::fs::read(p).with_context(|| format!("reading --rekor-pubkey {:?}", p))?,
+    // Trusted Rekor log public key for SET verification. `--rekor-pubkey`
+    // overrides; otherwise default to the pinned public-Sigstore key
+    // (zkpox_anchor::default_rekor_pubkey_pem), so the SET check runs on
+    // the happy path with no hand-supplied PEM. The pin is the key the
+    // Sigstore TUF root distributes for rekor.sigstore.dev — see
+    // crates/zkpox-anchor/assets/rekor.pub.provenance.md.
+    let (rekor_pubkey_pem, rekor_key_source): (Option<Vec<u8>>, &str) = match &args.rekor_pubkey {
+        Some(p) => (
+            Some(std::fs::read(p).with_context(|| format!("reading --rekor-pubkey {:?}", p))?),
+            "--rekor-pubkey",
         ),
-        None => None,
+        None => (
+            Some(zkpox_anchor::default_rekor_pubkey_pem().to_vec()),
+            "pinned-sigstore",
+        ),
     };
 
     let bundle_bytes = std::fs::read(&args.bundle)
@@ -226,6 +268,27 @@ fn main() -> Result<()> {
         .metadata
         .get("provenance")
         .map(ciborium_to_json);
+
+    // Trust-source provenance (Phase 3): surface where each key came
+    // from, so a reviewer can trace it back to a published source.
+    let env = &bundle.vendor_envelope;
+    if let Some(url) = &env.vendor_key_source_url {
+        let method = env.vendor_key_source_method.as_deref().unwrap_or("?");
+        summary.vendor_key_source = Some(format!("{url} ({method})"));
+    }
+    if let Some(r) = &bundle.researcher {
+        summary.researcher_identity_url = r.identity_url.clone();
+    }
+    if let Some(round) = env.drand_target_round.or(env.drand_round_min) {
+        let chain = env.drand_chain_hash.as_deref().unwrap_or("(chain unrecorded)");
+        let unlock = drand_round_unlock_estimate(round);
+        summary.timelock = Some(format!("round {round} on chain {chain}{unlock}"));
+    }
+    // Which Rekor key the SET check will trust — only relevant if the
+    // bundle carries a timestamp to check.
+    if bundle.timestamp.is_some() {
+        summary.rekor_key_source = Some(rekor_key_source.to_string());
+    }
 
     // ---- 2. Structural checks ----------------------------------------
     if !bundle.target.hash.starts_with("sha256:") {
@@ -389,7 +452,8 @@ fn main() -> Result<()> {
                 }
                 if outcome.set_valid == Some(false) {
                     summary.errors.push(
-                        "Rekor SET signature did not verify against --rekor-pubkey".into(),
+                        "Rekor SET signature did not verify against the trusted log key \
+                         (pinned default, or --rekor-pubkey if supplied)".into(),
                     );
                     ok = false;
                 }
@@ -420,6 +484,66 @@ fn main() -> Result<()> {
         }
     }
 
+    // ---- 7. Online trust-source re-checks (--online) -----------------
+    // Re-fetch the bundle's recorded trust sources and confirm the keys
+    // it carries still match what those sources publish. Offline (the
+    // default) these stay None ("not run") and the recorded provenance
+    // is surfaced but not re-verified.
+    if args.online {
+        // Vendor key: published recipient at vendor_key_source_url must
+        // equal the recipient the envelope was sealed to.
+        if let Some(url) = &bundle.vendor_envelope.vendor_key_source_url {
+            match recheck_vendor_key(url, &bundle.vendor_envelope.vendor_pubkey) {
+                Ok(m) => {
+                    summary.vendor_key_source_match = Some(m);
+                    if !m {
+                        summary.errors.push(format!(
+                            "vendor key published at {url} no longer matches the bundle's \
+                             vendor_pubkey"
+                        ));
+                        ok = false;
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("vendor-key online re-check ({url}): {e:#}");
+                    if strict {
+                        summary.errors.push(msg);
+                        ok = false;
+                    } else {
+                        summary.warnings.push(msg);
+                    }
+                }
+            }
+        }
+        // Researcher identity: published key at identity_url must equal
+        // the researcher.pubkey that signed the bundle.
+        if let Some(r) = &bundle.researcher {
+            if let Some(url) = &r.identity_url {
+                match recheck_researcher_identity(url, &r.pubkey) {
+                    Ok(m) => {
+                        summary.researcher_identity_match = Some(m);
+                        if !m {
+                            summary.errors.push(format!(
+                                "researcher key published at {url} does not match the bundle's \
+                                 researcher.pubkey"
+                            ));
+                            ok = false;
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("researcher-identity online re-check ({url}): {e:#}");
+                        if strict {
+                            summary.errors.push(msg);
+                            ok = false;
+                        } else {
+                            summary.warnings.push(msg);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     summary.overall_ok = ok;
 
     if args.json {
@@ -431,6 +555,92 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+// --- Phase 3: trust-source provenance ---------------------------------
+
+/// Human estimate of when a Drand quicknet round finalises, as a
+/// trailing " (~unlocks YYYY-MM-DD)". Empty string for non-quicknet or
+/// if the chain is unrecorded — we only know the timing for the pinned
+/// quicknet parameters. Inverse of `zkpox_envelope::round_at`.
+fn drand_round_unlock_estimate(round: u64) -> String {
+    use zkpox_envelope::{DRAND_QUICKNET_GENESIS_TIME, DRAND_QUICKNET_PERIOD};
+    // round 1 finalises at genesis + period*1.
+    let unlock_unix = DRAND_QUICKNET_GENESIS_TIME + DRAND_QUICKNET_PERIOD.saturating_mul(round);
+    // Cheap UTC date from a Unix timestamp (days since epoch → Y-M-D),
+    // avoiding a chrono dependency.
+    format!(" (~unlocks {})", unix_to_utc_date(unlock_unix as i64))
+}
+
+/// Minimal Unix-seconds → "YYYY-MM-DD" (UTC). Civil-from-days algorithm
+/// (Howard Hinnant). Good enough for a human time-lock hint.
+fn unix_to_utc_date(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Fetch a URL body (HTTPS only). Shared by the online re-checks.
+fn fetch_https_body(url: &str) -> Result<String> {
+    if !url.starts_with("https://") {
+        bail!("refusing to fetch non-https URL {url:?}");
+    }
+    match ureq::get(url).call() {
+        Ok(resp) => resp
+            .into_string()
+            .with_context(|| format!("reading body of {url}")),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            bail!("HTTP {code}: {body}")
+        }
+        Err(e) => bail!("{e}"),
+    }
+}
+
+/// `--online`: confirm the age recipient published at `url` (a
+/// security.txt `Zkpox-Age-Recipient` field, or a bare
+/// `.well-known/zkpox-vendor.age.pub` body) equals `expected`.
+fn recheck_vendor_key(url: &str, expected: &str) -> Result<bool> {
+    let body = fetch_https_body(url)?;
+    // security.txt field first.
+    for line in body.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("Zkpox-Age-Recipient") {
+                return Ok(value.trim() == expected);
+            }
+        }
+    }
+    // Else treat the body as a bare recipient (first non-blank,
+    // non-comment line).
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        return Ok(line == expected);
+    }
+    bail!("no age recipient found at {url}")
+}
+
+/// `--online`: confirm the ed25519 key published at `url` matches the
+/// bundle's `researcher.pubkey`. Compares by parsed 32-byte key (so PEM
+/// whitespace / framing differences don't cause false mismatches).
+fn recheck_researcher_identity(url: &str, bundle_pubkey: &[u8]) -> Result<bool> {
+    let published = fetch_https_body(url)?;
+    let published_pem = std::str::from_utf8(bundle_pubkey)
+        .context("bundle researcher.pubkey is not UTF-8 PEM")?;
+    let want = pem_to_ed25519_pubkey(published_pem)?;
+    let got = pem_to_ed25519_pubkey(&published)?;
+    Ok(want.to_bytes() == got.to_bytes())
 }
 
 // --- STARK verification -----------------------------------------------
@@ -947,6 +1157,20 @@ fn print_human(s: &VerifySummary, strict: bool) {
         if s.has_researcher { "signed" } else { "(none)" }
     );
 
+    // Trust-source provenance (Phase 3): where each key traces back to.
+    if let Some(v) = &s.vendor_key_source {
+        println!("  vendor key:    resolved from {v}");
+    }
+    if let Some(u) = &s.researcher_identity_url {
+        println!("  researcher id: published at {u}");
+    }
+    if let Some(t) = &s.timelock {
+        println!("  time-lock:     {t}");
+    }
+    if let Some(rk) = &s.rekor_key_source {
+        println!("  rekor key:     {rk}");
+    }
+
     if let Some(serde_json::Value::Object(o)) = &s.target_provenance {
         println!();
         println!("provenance:    (target.metadata — informational, NOT committed to the proof)");
@@ -1017,6 +1241,14 @@ fn print_human(s: &VerifySummary, strict: bool) {
         "  researcher signature:       {}",
         opt_str(s.researcher_signature_valid)
     );
+    println!(
+        "  vendor key (online):        {}",
+        opt_str(s.vendor_key_source_match)
+    );
+    println!(
+        "  researcher id (online):     {}",
+        opt_str(s.researcher_identity_match)
+    );
 
     if !s.warnings.is_empty() {
         println!();
@@ -1056,5 +1288,74 @@ fn opt_str(b: Option<bool>) -> &'static str {
         Some(true) => "ok",
         Some(false) => "FAIL",
         None => "n/a",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build an ed25519 SubjectPublicKeyInfo PEM from a *real* verifying
+    /// key (so it decompresses to a valid curve point), optionally on a
+    /// single base64 line to exercise framing differences. Mirrors the
+    /// prover's `ed25519_pubkey_pem`.
+    fn ed25519_spki_pem(vk: &ed25519_dalek::VerifyingKey, single_line: bool) -> String {
+        let raw = vk.to_bytes();
+        let mut der = Vec::with_capacity(44);
+        der.extend_from_slice(&[0x30, 0x2A, 0x30, 0x05, 0x06, 0x03, 0x2B, 0x65, 0x70]);
+        der.extend_from_slice(&[0x03, 0x21, 0x00]);
+        der.extend_from_slice(&raw);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        let mut pem = String::from("-----BEGIN PUBLIC KEY-----\n");
+        if single_line {
+            pem.push_str(&b64);
+            pem.push('\n');
+        } else {
+            for chunk in b64.as_bytes().chunks(64) {
+                pem.push_str(std::str::from_utf8(chunk).unwrap());
+                pem.push('\n');
+            }
+        }
+        pem.push_str("-----END PUBLIC KEY-----\n");
+        pem
+    }
+
+    fn vk_from_seed(seed: u8) -> ed25519_dalek::VerifyingKey {
+        ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key()
+    }
+
+    /// The researcher-identity `--online` check compares two PEMs by
+    /// their parsed 32-byte key (`want.to_bytes() == got.to_bytes()`).
+    /// This exercises that comparison primitive directly: the SAME key in
+    /// two different PEM framings must compare equal, so legitimate
+    /// formatting differences between the bundle's key and the published
+    /// key never cause a false mismatch.
+    #[test]
+    fn researcher_key_match_is_framing_insensitive() {
+        let vk = vk_from_seed(7);
+        let wrapped = pem_to_ed25519_pubkey(&ed25519_spki_pem(&vk, false)).unwrap();
+        let one_line = pem_to_ed25519_pubkey(&ed25519_spki_pem(&vk, true)).unwrap();
+        assert_eq!(
+            wrapped.to_bytes(),
+            one_line.to_bytes(),
+            "same key, different PEM framing must match"
+        );
+    }
+
+    /// ...and two DIFFERENT keys must NOT compare equal — the check
+    /// catches a published key that doesn't match the bundle's signer.
+    #[test]
+    fn researcher_key_match_rejects_different_key() {
+        let a = pem_to_ed25519_pubkey(&ed25519_spki_pem(&vk_from_seed(1), false)).unwrap();
+        let b = pem_to_ed25519_pubkey(&ed25519_spki_pem(&vk_from_seed(2), false)).unwrap();
+        assert_ne!(a.to_bytes(), b.to_bytes());
+    }
+
+    /// Garbage / non-PEM input is rejected rather than silently treated
+    /// as a (mismatching) key.
+    #[test]
+    fn researcher_key_parse_rejects_garbage() {
+        assert!(pem_to_ed25519_pubkey("not a pem").is_err());
+        assert!(pem_to_ed25519_pubkey("-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n").is_err());
     }
 }

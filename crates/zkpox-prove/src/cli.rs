@@ -107,9 +107,19 @@ pub struct ProveArgs {
     pub output: PathBuf,
 
     /// age recipient (`age1...` X25519 pubkey) for the vendor
-    /// envelope. Omit to skip envelope sealing.
-    #[arg(long)]
+    /// envelope. Omit to skip envelope sealing. Mutually exclusive with
+    /// `--vendor-from-domain`.
+    #[arg(long, conflicts_with = "vendor_from_domain")]
     pub vendor_pubkey: Option<String>,
+
+    /// Resolve the vendor's age recipient from their domain instead of
+    /// pasting it in: fetches `https://<domain>/.well-known/security.txt`
+    /// and reads a `Zkpox-Age-Recipient:` field, falling back to
+    /// `https://<domain>/.well-known/zkpox-vendor.age.pub`. The bundle
+    /// records where the key came from so a verifier can trace it back
+    /// to a published source. Mutually exclusive with `--vendor-pubkey`.
+    #[arg(long)]
+    pub vendor_from_domain: Option<String>,
 
     /// Time-lock duration (e.g. `90d`, `30m`, `8s`). Defaults to
     /// Project Zero's 90-day CVD norm.
@@ -125,12 +135,29 @@ pub struct ProveArgs {
     #[arg(long)]
     pub rekor_url: Option<String>,
 
-    /// Path to an ed25519 secret key (raw 32 bytes) used to sign
-    /// the bundle. Generates an ephemeral key if omitted.
+    /// Path to an ed25519 secret key (raw 32 bytes) used to sign the
+    /// bundle — a persistent researcher identity. Required unless
+    /// `--anonymous` or `--ephemeral-researcher-key` is given (an
+    /// unstable per-run key signs nothing meaningful).
     #[arg(long)]
     pub researcher_key: Option<PathBuf>,
 
-    /// Skip researcher signature entirely.
+    /// URL where the researcher's public key is published (e.g.
+    /// `https://me.example/.well-known/zkpox-researcher.pub`). Binds the
+    /// signing key to a persistent, published identity; recorded in the
+    /// bundle so a verifier can fetch it and confirm the match.
+    #[arg(long)]
+    pub researcher_identity: Option<String>,
+
+    /// Generate a throwaway ephemeral researcher key for THIS run. Only
+    /// for testing — the resulting signature proves possession of a
+    /// one-off key, not any persistent identity. Mutually exclusive with
+    /// `--researcher-key` and `--anonymous`.
+    #[arg(long, conflicts_with_all = ["researcher_key", "anonymous"])]
+    pub ephemeral_researcher_key: bool,
+
+    /// Skip researcher signature entirely (anonymous disclosure; time
+    /// priority then rests solely on the Rekor anchor).
     #[arg(long)]
     pub anonymous: bool,
 

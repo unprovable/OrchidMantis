@@ -130,13 +130,32 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
     }
 
     // ---- Phase 4: optional envelope ------------------------------------
-    let envelope = match args.vendor_pubkey.as_deref() {
-        Some(pk) => Some(
-            seal_envelope(&witness_bytes, pk, &args.tlock_duration)
+    // Resolve the vendor recipient: either supplied raw (--vendor-pubkey)
+    // or fetched from the vendor's domain (--vendor-from-domain), in
+    // which case we record its provenance in the bundle.
+    let resolved_vendor = match (&args.vendor_pubkey, &args.vendor_from_domain) {
+        (Some(pk), _) => Some(crate::vendor::ResolvedVendor::from_raw(pk.clone())),
+        (None, Some(domain)) => {
+            let rv = crate::vendor::resolve_from_domain(domain)
+                .context("resolving vendor key from domain")?;
+            tracing::info!(
+                recipient = %rv.recipient,
+                source = %rv.source_url.as_deref().unwrap_or(""),
+                "resolved vendor age recipient from domain"
+            );
+            Some(rv)
+        }
+        (None, None) => None,
+    };
+
+    let envelope = match &resolved_vendor {
+        Some(rv) => Some(
+            seal_envelope(&witness_bytes, &rv.recipient, &args.tlock_duration)
                 .context("sealing vendor envelope")?,
         ),
         None => None,
     };
+    let resolved_vendor = resolved_vendor.unwrap_or_else(crate::vendor::ResolvedVendor::none);
 
     // ---- Phase 5: assemble bundle (pre-anchor, pre-researcher) ---------
     let target_hash_hex = backend.target_hash_hex.clone();
@@ -148,20 +167,37 @@ pub fn cmd_prove(args: ProveArgs) -> Result<()> {
         &public_values_bytes,
         &pv,
         envelope.as_ref(),
+        &resolved_vendor,
         target_hash_hex.as_str(),
     )?;
 
     // ---- Phase 6: researcher signature (pre-anchor so signature   -----
     //              binds the bundle's content but not the timestamp).
-    let researcher_signed = if !args.anonymous {
-        let kp = match &args.researcher_key {
-            Some(p) => load_researcher_key(p)?,
-            None => gen_ephemeral_researcher_key(),
-        };
-        attach_researcher_signature(&mut bundle, &kp)?;
-        true
-    } else {
+    // A persistent, published identity is the default expectation. We
+    // refuse to silently mint a throwaway key (its signature attests to
+    // nothing); the caller must choose a persistent key, opt in to an
+    // explicit ephemeral key for testing, or go anonymous.
+    let researcher_signed = if args.anonymous {
         false
+    } else {
+        let kp = match (&args.researcher_key, args.ephemeral_researcher_key) {
+            (Some(p), _) => load_researcher_key(p)?,
+            (None, true) => {
+                tracing::warn!(
+                    "using an EPHEMERAL researcher key: the signature proves possession of a \
+                     one-off key, not any persistent identity. For real disclosure pass \
+                     --researcher-key <file> (+ --researcher-identity <url>)."
+                );
+                gen_ephemeral_researcher_key()
+            }
+            (None, false) => bail!(
+                "no researcher key: pass --researcher-key <file> (a persistent ed25519 identity), \
+                 or --ephemeral-researcher-key for a throwaway test key, or --anonymous to skip \
+                 the researcher signature entirely."
+            ),
+        };
+        attach_researcher_signature(&mut bundle, &kp, args.researcher_identity.as_deref())?;
+        true
     };
 
     // ---- Phase 7: optional Rekor anchor --------------------------------
@@ -367,6 +403,7 @@ fn build_bundle(
     public_values_bytes: &[u8],
     pv: &ParsedPublicValues,
     envelope: Option<&zkpox_envelope::Envelope>,
+    resolved_vendor: &crate::vendor::ResolvedVendor,
     target_hash_hex: &str,
 ) -> Result<Bundle> {
     use crate::cli::Wrap;
@@ -440,10 +477,12 @@ fn build_bundle(
             ct_k_age: ByteBuf::from(env.ct_k_age.clone()),
             ct_k_tlock: ByteBuf::from(env.ct_k_tlock.clone()),
             drand_round_min: Some(env.drand_round),
-            vendor_pubkey: args.vendor_pubkey.clone().unwrap_or_default(),
-            vendor_pubkey_fingerprint: sha256_bytes(
-                args.vendor_pubkey.as_deref().unwrap_or("").as_bytes(),
-            ),
+            drand_target_round: Some(env.drand_round),
+            drand_chain_hash: Some(hex::encode(zkpox_envelope::DRAND_QUICKNET_CHAIN_HASH)),
+            vendor_pubkey: resolved_vendor.recipient.clone(),
+            vendor_pubkey_fingerprint: sha256_bytes(resolved_vendor.recipient.as_bytes()),
+            vendor_key_source_url: resolved_vendor.source_url.clone(),
+            vendor_key_source_method: resolved_vendor.source_method.clone(),
         },
         None => VendorEnvelope {
             scheme: ENVELOPE_NONE.to_string(),
@@ -451,8 +490,12 @@ fn build_bundle(
             ct_k_age: ByteBuf::new(),
             ct_k_tlock: ByteBuf::new(),
             drand_round_min: None,
+            drand_target_round: None,
+            drand_chain_hash: None,
             vendor_pubkey: String::new(),
             vendor_pubkey_fingerprint: sha256_bytes(b""),
+            vendor_key_source_url: None,
+            vendor_key_source_method: None,
         },
     };
     Ok(Bundle {
@@ -583,13 +626,18 @@ fn ed25519_pubkey_pem(vk: &ed25519_dalek::VerifyingKey) -> String {
     pem
 }
 
-fn attach_researcher_signature(bundle: &mut Bundle, kp: &ResearcherKey) -> Result<()> {
+fn attach_researcher_signature(
+    bundle: &mut Bundle,
+    kp: &ResearcherKey,
+    identity_url: Option<&str>,
+) -> Result<()> {
     let digest = sha256_bundle_pre_researcher(bundle);
     let sig = ed25519_dalek::Signer::sign(&kp.signer, &digest);
     bundle.researcher = Some(zkpox_schema::Researcher {
         pubkey: ByteBuf::from(kp.pem_pubkey.clone().into_bytes()),
         signature_over_bundle: ByteBuf::from(sig.to_bytes().to_vec()),
         contact: None,
+        identity_url: identity_url.map(|s| s.to_string()),
     });
     Ok(())
 }

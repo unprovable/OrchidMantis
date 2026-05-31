@@ -27,6 +27,7 @@
 mod build;
 mod cli;
 mod orchestrate;
+mod vendor;
 
 use anyhow::Result;
 use clap::Parser;

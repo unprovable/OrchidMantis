@@ -20,6 +20,9 @@ serde_json         = { workspace = true }
 ciborium           = { workspace = true }
 sha2               = { workspace = true }
 hex                = { workspace = true }
+# Optional `--online` re-checks of recorded trust sources (vendor key,
+# researcher identity). Same client the anchor crate uses.
+ureq               = { workspace = true }
 
 zkpox-schema             = { path = "../zkpox-schema" }
 zkpox-envelope           = { path = "../zkpox-envelope" }

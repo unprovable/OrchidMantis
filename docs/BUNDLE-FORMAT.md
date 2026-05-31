@@ -135,8 +135,12 @@ field requires bumping `PUBLIC_VALUES_VERSION`.
   "ct_k_age":                  <bytes>,
   "ct_k_tlock":                <bytes>,
   "drand_round_min":           u64 | absent,
+  "drand_target_round":        u64 | absent,                  (Phase 3: exact unlock round)
+  "drand_chain_hash":          "<hex>" | absent,              (Phase 3: which Drand chain)
   "vendor_pubkey":             "age1...",     (Text)
-  "vendor_pubkey_fingerprint": "sha256:<64 hex chars>"  (Text)
+  "vendor_pubkey_fingerprint": "sha256:<64 hex chars>",  (Text)
+  "vendor_key_source_url":     "https://vendor.example/.well-known/security.txt" | absent,  (Phase 3)
+  "vendor_key_source_method":  "security.txt" | "well-known-file" | absent                  (Phase 3)
 }
 ```
 
@@ -146,6 +150,17 @@ field requires bumping `PUBLIC_VALUES_VERSION`.
 - `ct_k_tlock` is `K` encrypted to the Drand quicknet round
   `drand_round_min` via `tlock_age::encrypt`. The tlock blob is
   self-contained and embeds the chain hash + round.
+- `drand_target_round` + `drand_chain_hash` (Phase 3) record the exact
+  round the tlock blob unlocks at and which Drand chain it's on, so a
+  verifier doesn't assume quicknet; it surfaces both with an approximate
+  unlock date. `drand_round_min` is retained as a floor.
+- `vendor_key_source_url` / `vendor_key_source_method` (Phase 3) record
+  where the recipient was resolved from when sealed via
+  `zkpox-prove --vendor-from-domain` (a `security.txt`
+  `Zkpox-Age-Recipient` field, or a `.well-known/zkpox-vendor.age.pub`
+  file); absent for a raw `--vendor-pubkey`. `zkpox-verify --online`
+  re-fetches and confirms the published recipient still equals
+  `vendor_pubkey`.
 - `scheme == "zkpox-none/v1"` indicates no envelope (the witness
   travels out-of-band or there is no privacy requirement). All
   ciphertext fields are empty in that case.
@@ -191,7 +206,8 @@ Verifier checks (with network, single fetch):
 {
   "pubkey":                <bytes>,    (PEM-encoded ed25519 SPKI)
   "signature_over_bundle": <bytes>,    (ed25519 signature, 64 bytes)
-  "contact":               "email or URL" | absent
+  "contact":               "email or URL" | absent,
+  "identity_url":          "https://me.example/.well-known/zkpox-researcher.pub" | absent  (Phase 3)
 }
 ```
 
