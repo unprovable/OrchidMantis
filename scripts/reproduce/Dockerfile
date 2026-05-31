@@ -44,6 +44,7 @@ RUN apt-get update \
         curl \
         ca-certificates \
         git \
+        protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 # build.rs picks Homebrew clang on macOS; on Linux it falls back to
