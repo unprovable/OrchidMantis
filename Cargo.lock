@@ -7221,7 +7221,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "ed25519-dalek",
  "hex",
+ "p256",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -7334,6 +7336,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sp1-sdk",
+ "sp1-verifier",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",

@@ -1,0 +1,72 @@
+# Phase 2.5 — Manual end-to-end prove (heavy).
+#
+# Produces a real groth16 disclosure bundle for target #4 end-to-end:
+# build the guest, run the ~16M-constraint groth16 prove, then verify.
+# This is the expensive path — it downloads the ~6 GB SP1 circuit
+# artifacts on first use and needs substantial RAM/CPU — so it is
+# manual (workflow_dispatch) only, never on push.
+#
+# Use it to mint a fresh artifact (e.g. to refresh examples/ or to
+# rehearse a disclosure), not as a per-commit gate. The per-commit gate
+# is reproduce.yml, which builds + verifies without proving.
+
+name: prove
+
+on:
+  workflow_dispatch:
+    inputs:
+      wrap:
+        description: "Proof wrap mode"
+        type: choice
+        options: [groth16, core]
+        default: groth16
+
+jobs:
+  prove-e2e:
+    runs-on: ubuntu-latest
+    # The groth16 prove is slow (artifact download + ~16M constraints).
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build reproduce image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/reproduce/Dockerfile
+          tags: zkpox-reproduce:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Build the guest (reproduces + asserts the VK as a precondition),
+      # then run the full prove and verify the freshly minted bundle.
+      - name: Build guest + assert VK
+        run: docker run --rm -v "${{ github.workspace }}/out:/out" zkpox-reproduce:ci
+
+      - name: Prove (groth16) + verify
+        run: |
+          docker run --rm -v "${{ github.workspace }}/out:/out" \
+            --entrypoint bash zkpox-reproduce:ci -c '
+              set -euo pipefail
+              target/release/zkpox-prove prove \
+                --target targets/04-libxml2-cve-2017-9047-upstream.c \
+                --predicate memory-safety::oob-write \
+                --buf-size 5000 \
+                --witness witnesses/04-cve-2017-9047-trigger.bin \
+                --wrap "${{ github.event.inputs.wrap }}" \
+                --provenance targets/04-libxml2-cve-2017-9047-upstream.provenance.json \
+                --no-anchor \
+                --output /out/bundle04.cbor
+              target/release/zkpox-verify /out/bundle04.cbor
+            '
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle04-${{ github.event.inputs.wrap }}
+          path: out/bundle04.cbor
+          if-no-files-found: error

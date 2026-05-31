@@ -2,6 +2,16 @@
 /target
 /crates/*/target
 
+# SP1 proving stack. `cargo prove build` emits the guest ELF into the
+# guest crate's elf/ dir (and into target/elf-compilation/, already
+# covered above). The SP1 toolchain + circuit artifacts live in ~/.sp1
+# (outside the repo); the line below only guards an in-repo copy.
+/crates/zkpox-guest/elf/
+/.sp1/
+# Backend ELF/VK cache when it falls back to a repo-local dir (HOME
+# unset). Default is $XDG_CACHE_HOME/zkpox or ~/.cache/zkpox.
+/.zkpox-cache/
+
 # Cargo.lock IS committed for binary crates (reproducible builds).
 # Leave it out of the ignore list.
 
@@ -16,6 +26,10 @@
 /tmp
 /out
 /.cache
+
+# TEMPORARY: internal working notes (production-roadmap). Delete this
+# directory AND remove this gitignore stanza before release/merge.
+/notes/
 
 # Local agent state (not for the repo)
 .claude/

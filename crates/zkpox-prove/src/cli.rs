@@ -139,6 +139,15 @@ pub struct ProveArgs {
     #[arg(long)]
     pub target_url: Option<String>,
 
+    /// Optional path to a provenance JSON file (e.g. a target's
+    /// `*.provenance.json`). Its object is embedded verbatim under
+    /// `bundle.target.metadata.provenance`, binding the bundle to the
+    /// upstream source the target was extracted from (repo, tag, fixed
+    /// commit, function, extraction notes). Surfaced by the verifier so
+    /// a reviewer can trace harness → upstream.
+    #[arg(long)]
+    pub provenance: Option<PathBuf>,
+
     /// Where the target source can be retrieved.
     #[arg(long)]
     pub source_url: Option<String>,

@@ -10,9 +10,15 @@
 rust:                 stable (≥ 1.85)
 
 # SP1 (zkVM).
-sp1-zkvm:             6.0.1
-sp1-sdk:              6.0.1
-cargo-prove:          v6.1.0 (succinct rustup channel auto-installed by sp1up)
+#
+# NOTE: the Cargo manifests request "6.0.1" (a caret requirement), but
+# Cargo.lock RESOLVES the 6.2.x line — that resolved set is what
+# actually produces the artifacts, so it is the real pin. Cargo.lock is
+# the source of truth; the numbers below document what it resolves to.
+sp1-zkvm:             6.2.0   (resolved; manifest requests ^6.0.1)
+sp1-sdk:              6.2.0   (resolved; manifest requests ^6.0.1)
+sp1-verifier:         6.2.0   (lightweight on-chain groth16 verify path)
+cargo-prove:          v6.1.0  (succinct rustup channel auto-installed by sp1up)
 
 # Cross-compile toolchain for the freestanding C target.
 clang:                Homebrew LLVM 22.x on macOS; Ubuntu LLVM 18+ on Linux.

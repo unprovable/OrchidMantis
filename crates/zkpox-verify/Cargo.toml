@@ -30,3 +30,8 @@ zkpox-predicates         = { path = "../zkpox-predicates" }
 base64           = { workspace = true }
 ed25519-dalek    = { version = "2" }
 sp1-sdk          = { workspace = true }
+# Lightweight on-chain-style groth16 verifier: embeds the SP1 version's
+# ~300 KB verifying key, so a vendor verifies a wrapped proof without
+# the guest ELF or the multi-GB proving artifacts. Pinned to the SP1
+# release the rest of the stack resolves to (see versions.txt).
+sp1-verifier     = "6.2.0"
