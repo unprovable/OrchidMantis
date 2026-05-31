@@ -46,8 +46,7 @@ cargo build --release
 ### 1. Extract the bug into a freestanding C function
 
 The target's contract is one `zkpox_victim(buf, buf_size, input, n)`
-function. See `targets/03-libxml2-cve-2017-9047.c` for a real-world
-example (freestanding extraction of an existing CVE).
+function.
 
 ```c
 #include <stddef.h>
@@ -61,6 +60,30 @@ char zkpox_victim(
 }
 ```
 
+**Fidelity matters more than convenience here.** A bundle binds to
+`sha256(target.c)`, so a reviewer's confidence is exactly their
+confidence that `target.c` faithfully represents the real code. Two
+patterns:
+
+- **Reduction** (`targets/03-libxml2-cve-2017-9047.c`): a hand-retyped
+  paraphrase of the bug. Quick to write, but a reviewer must trust the
+  retype.
+- **Verbatim extraction** (`targets/04-libxml2-cve-2017-9047-upstream.c`,
+  *recommended*): the **real** upstream function + real type defs,
+  copied character-for-character, with only freestanding libc shims
+  added (the guest links no libc). The proof then binds to the code as
+  upstream wrote it. Pair it with a `*.provenance.json` (see step 3)
+  recording the upstream repo, vulnerable tag, fixed commit, and
+  function, and verify the bug still fires natively before proving:
+
+  ```sh
+  ./tests/run-realsource-repro.sh   # no SP1 toolchain needed
+  ```
+
+  Note the **caller geometry**: the real function only reaches the bug
+  when its buffer is near-full, so verbatim targets carry the real
+  caller's `--buf-size` (5000 for this CVE) rather than a shrunk one.
+
 ### 2. Build the backend
 
 ```sh
@@ -68,6 +91,16 @@ char zkpox_victim(
     --target targets/my-bug.c \
     --predicate memory-safety::oob-write \
     --buf-size 64
+```
+
+For the verbatim libxml2 example, the buffer size must match the real
+caller geometry:
+
+```sh
+./target/release/zkpox-prove build-target \
+    --target targets/04-libxml2-cve-2017-9047-upstream.c \
+    --predicate memory-safety::oob-write \
+    --buf-size 5000
 ```
 
 Outputs the cache key, cached ELF path, and the
@@ -99,6 +132,11 @@ target + predicate hit the cache.
 - The bundle is anchored to Sigstore Rekor by default. Skip with
   `--no-anchor` for testing; the public bundle then has no
   cryptographic time priority.
+- `--provenance <file.json>` embeds an upstream-provenance object under
+  `target.metadata.provenance` (repo, vulnerable tag, fixed commit,
+  function, extraction notes), so a verifier can trace the harness back
+  to upstream. Use the target's `*.provenance.json`:
+  `--provenance targets/04-libxml2-cve-2017-9047-upstream.provenance.json`.
 
 ### 4. Send the bundle
 

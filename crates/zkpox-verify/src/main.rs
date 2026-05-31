@@ -146,6 +146,12 @@ struct VerifySummary {
     envelope_scheme: String,
     has_timestamp: bool,
     has_researcher: bool,
+    /// Upstream provenance object from `target.metadata.provenance`, if
+    /// the producer embedded one (via `zkpox-prove --provenance`). This
+    /// is plaintext metadata — NOT committed to the proof — surfaced so
+    /// a reviewer can trace the harness back to upstream source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_provenance: Option<serde_json::Value>,
 
     structural_checks_passed: bool,
     target_rehash_match: Option<bool>,
@@ -215,6 +221,11 @@ fn main() -> Result<()> {
     summary.envelope_scheme = bundle.vendor_envelope.scheme.clone();
     summary.has_timestamp = bundle.timestamp.is_some();
     summary.has_researcher = bundle.researcher.is_some();
+    summary.target_provenance = bundle
+        .target
+        .metadata
+        .get("provenance")
+        .map(ciborium_to_json);
 
     // ---- 2. Structural checks ----------------------------------------
     if !bundle.target.hash.starts_with("sha256:") {
@@ -723,6 +734,49 @@ fn pem_to_ed25519_pubkey(pem: &str) -> Result<ed25519_dalek::VerifyingKey> {
     ed25519_dalek::VerifyingKey::from_bytes(&buf).map_err(|e| anyhow!("ed25519 from_bytes: {e}"))
 }
 
+// --- Provenance metadata ----------------------------------------------
+
+/// Convert a CBOR metadata value into `serde_json::Value` for display.
+/// Inverse of the prover's `json_to_ciborium`; lossless for the JSON
+/// subset provenance files use.
+fn ciborium_to_json(v: &ciborium::Value) -> serde_json::Value {
+    use ciborium::Value as C;
+    use serde_json::Value as J;
+    match v {
+        C::Null => J::Null,
+        C::Bool(b) => J::Bool(*b),
+        C::Integer(i) => {
+            if let Ok(x) = i64::try_from(*i) {
+                J::Number(x.into())
+            } else if let Ok(x) = u64::try_from(*i) {
+                J::Number(x.into())
+            } else {
+                J::String(format!("{i:?}"))
+            }
+        }
+        C::Float(f) => serde_json::Number::from_f64(*f)
+            .map(J::Number)
+            .unwrap_or(J::Null),
+        C::Text(s) => J::String(s.clone()),
+        C::Bytes(b) => J::String(hex::encode(b)),
+        C::Array(a) => J::Array(a.iter().map(ciborium_to_json).collect()),
+        C::Map(m) => {
+            let mut obj = serde_json::Map::new();
+            for (k, val) in m {
+                let key = match k {
+                    C::Text(s) => s.clone(),
+                    other => format!("{other:?}"),
+                };
+                obj.insert(key, ciborium_to_json(val));
+            }
+            J::Object(obj)
+        }
+        // ciborium::Value is non-exhaustive (tags, etc.); provenance
+        // never carries those.
+        _ => J::Null,
+    }
+}
+
 // --- Human output -----------------------------------------------------
 
 fn print_human(s: &VerifySummary, strict: bool) {
@@ -755,6 +809,38 @@ fn print_human(s: &VerifySummary, strict: bool) {
         "  researcher:    {}",
         if s.has_researcher { "signed" } else { "(none)" }
     );
+
+    if let Some(serde_json::Value::Object(o)) = &s.target_provenance {
+        println!();
+        println!("provenance:    (target.metadata — informational, NOT committed to the proof)");
+        // Surface the well-known fields in a stable order; print any
+        // remaining scalar fields after, so a richer provenance file
+        // still shows up.
+        const KNOWN: &[&str] = &[
+            "cve",
+            "upstream_project",
+            "upstream_repo",
+            "vulnerable_tag",
+            "fixed_commit",
+            "function",
+            "function_file",
+            "extraction",
+            "fidelity_level",
+        ];
+        for key in KNOWN {
+            if let Some(v) = o.get(*key).and_then(|v| v.as_str()) {
+                println!("  {key:<14} {v}");
+            }
+        }
+        for (k, v) in o {
+            if KNOWN.contains(&k.as_str()) {
+                continue;
+            }
+            if let Some(sv) = v.as_str() {
+                println!("  {k:<14} {sv}");
+            }
+        }
+    }
 
     println!();
     println!("checks:");
