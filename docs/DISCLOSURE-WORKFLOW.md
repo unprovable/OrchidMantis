@@ -175,6 +175,19 @@ Strict mode fails on any deferred or unverifiable check. `--target
 <local path>` triggers the re-hash check so you confirm the bundle
 binds to the source you intended.
 
+Two trust-root flags matter at acceptance time (Phases 3–4):
+
+- `--online` re-fetches the bundle's recorded trust sources and confirms
+  they still match: the vendor key at `vendor_key_source_url` and the
+  researcher key at `researcher.identity_url`. The Rekor SET is checked
+  against the pinned public Sigstore key by default (`--rekor-pubkey`
+  overrides).
+- `--cvd` is the disclosure-grade gate: it **refuses** a bundle marked
+  `experimental` (pre-1.0 bundles are experimental by default). Use it
+  when this verification is the acceptance decision for a real
+  disclosure; omit it for triage, where the experimental banner is just a
+  warning.
+
 ## Researcher attribution
 
 zkpox supports three attribution modes:

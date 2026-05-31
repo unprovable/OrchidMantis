@@ -4,6 +4,17 @@ The bundle is a single CBOR document, encoded with ciborium. Maps use
 text-string keys (CBOR major type 3); byte fields are CBOR byte strings
 (major type 2); integers are CBOR integers (major types 0/1).
 
+> **Format freeze (Phase 4).** The `zkpox-2.0` layout is frozen: a
+> published bundle will not be invalidated by a silent format change. Any
+> add / remove / rename / reorder of a field is a deliberate,
+> version-bumped event, enforced by the `schema_is_frozen_at_v2_0`
+> regression test in `crates/zkpox-schema/src/bundle.rs` — it pins
+> `BUNDLE_VERSION`, asserts byte-stable CBOR round-tripping, and freezes
+> the exact CBOR key sets, so drift fails the build until a reviewer
+> consciously updates the test *and* bumps the version. Optional /
+> `(Phase 3)` fields below are part of the frozen `zkpox-2.0` shape; being
+> optional (`skip_serializing_if`) keeps older bundles readable.
+
 ## Canonical encoding for hashing
 
 Two hashes are derived from the bundle and travel separately:

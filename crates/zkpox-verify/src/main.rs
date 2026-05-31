@@ -138,6 +138,16 @@ struct Cli {
     /// sources. Needs network.
     #[arg(long)]
     online: bool,
+
+    /// Disclosure-grade gate: refuse a bundle marked `experimental`
+    /// (`bundle.experimental == true`). Pre-1.0 bundles are experimental
+    /// by default — the format/verifier semantics may still change — so
+    /// accepting one for a real coordinated disclosure is unsafe. With
+    /// `--cvd`, an experimental bundle is a hard failure rather than just
+    /// a banner; pass it when a verifier is the acceptance gate for an
+    /// actual disclosure.
+    #[arg(long)]
+    cvd: bool,
 }
 
 #[derive(Serialize, Default)]
@@ -252,6 +262,18 @@ fn main() -> Result<()> {
     }
     summary.bundle_version = bundle.version.clone();
     summary.experimental = bundle.experimental;
+    // Disclosure-grade gate: an experimental bundle is fine for triage
+    // (banner only), but a hard failure when this verifier is the
+    // acceptance gate for a real disclosure (`--cvd`).
+    if bundle.experimental && args.cvd {
+        summary.errors.push(
+            "bundle is experimental but --cvd requires a disclosure-grade (experimental=false) \
+             bundle: refusing. Re-mint with `zkpox-prove prove --experimental=false` once the \
+             format is frozen, or drop --cvd for triage."
+                .into(),
+        );
+        ok = false;
+    }
     summary.target_kind = bundle.target.kind.clone();
     summary.target_hash = bundle.target.hash.clone();
     summary.predicate_id = bundle.predicate.id.clone();

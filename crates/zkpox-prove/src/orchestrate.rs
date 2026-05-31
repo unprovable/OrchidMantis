@@ -500,7 +500,7 @@ fn build_bundle(
     };
     Ok(Bundle {
         version: BUNDLE_VERSION.to_string(),
-        experimental: true,
+        experimental: args.experimental,
         target,
         predicate: predicate_field,
         backend: backend_field,

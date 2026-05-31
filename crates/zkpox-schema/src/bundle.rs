@@ -320,6 +320,106 @@ mod tests {
         assert_eq!(b, decoded);
     }
 
+    /// Phase 4 — schema freeze guard. The on-wire format is frozen at
+    /// `BUNDLE_VERSION`; any change to a struct's fields (add / remove /
+    /// rename / reorder) must be a deliberate, version-bumped event, not
+    /// a silent drift that invalidates already-published bundles.
+    ///
+    /// This pins three things that together make drift loud:
+    ///   1. `BUNDLE_VERSION` is exactly `zkpox-2.0`.
+    ///   2. Encoding is byte-stable (encode → decode → encode identical),
+    ///      so the canonical bytes a bundle hashes/anchors over are
+    ///      deterministic.
+    ///   3. The exact CBOR map key sets of the top-level bundle and of
+    ///      the trust-bearing sub-structs (`VendorEnvelope`, `Researcher`)
+    ///      — `serde` emits a struct as a CBOR map keyed by field name, so
+    ///      adding/removing/renaming a field changes this set and fails
+    ///      the test. A reviewer who intends the change updates the
+    ///      expected set here AND bumps `BUNDLE_VERSION`.
+    #[test]
+    fn schema_is_frozen_at_v2_0() {
+        use ciborium::Value;
+
+        // (1) Version pin.
+        assert_eq!(
+            BUNDLE_VERSION, "zkpox-2.0",
+            "BUNDLE_VERSION changed — this is a wire-format break; bump deliberately and update \
+             the freeze test + docs/BUNDLE-FORMAT.md"
+        );
+
+        // (2) Byte-stable round trip.
+        let b = fake_bundle();
+        let bytes = to_cbor(&b).unwrap();
+        let reencoded = to_cbor(&from_cbor(&bytes).unwrap()).unwrap();
+        assert_eq!(bytes, reencoded, "CBOR encoding is not byte-stable across a round trip");
+
+        // (3) Frozen key sets. Decode to a generic CBOR Value and read
+        // the map keys at each level. Nested fns (not closures) so they
+        // can carry the lifetime on `get`.
+        fn keys(v: &Value) -> Vec<String> {
+            let mut ks: Vec<String> = match v {
+                Value::Map(m) => m
+                    .iter()
+                    .filter_map(|(k, _)| match k {
+                        Value::Text(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => panic!("expected a CBOR map"),
+            };
+            ks.sort();
+            ks
+        }
+        fn get<'a>(v: &'a Value, key: &str) -> &'a Value {
+            match v {
+                Value::Map(m) => m
+                    .iter()
+                    .find(|(k, _)| matches!(k, Value::Text(s) if s == key))
+                    .map(|(_, val)| val)
+                    .unwrap_or_else(|| panic!("missing key {key:?}")),
+                _ => panic!("expected a CBOR map"),
+            }
+        }
+        let val: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+
+        // Top-level (fake_bundle has no timestamp/researcher, both
+        // skip_serializing_if=None, so they're absent here — that's the
+        // frozen shape for a no-anchor, no-researcher bundle).
+        assert_eq!(
+            keys(&val),
+            vec![
+                "backend",
+                "experimental",
+                "predicate",
+                "proof",
+                "target",
+                "vendor_envelope",
+                "version",
+            ],
+            "top-level bundle key set changed"
+        );
+
+        // VendorEnvelope — the Phase-3 trust-source + Phase-3 drand fields
+        // must stay frozen.
+        assert_eq!(
+            keys(get(&val, "vendor_envelope")),
+            vec![
+                "aes_blob",
+                "ct_k_age",
+                "ct_k_tlock",
+                "drand_chain_hash",
+                "drand_round_min",
+                "drand_target_round",
+                "scheme",
+                "vendor_key_source_method",
+                "vendor_key_source_url",
+                "vendor_pubkey",
+                "vendor_pubkey_fingerprint",
+            ],
+            "VendorEnvelope key set changed"
+        );
+    }
+
     #[test]
     fn pre_timestamp_hash_stable_across_adding_timestamp() {
         let b = fake_bundle();

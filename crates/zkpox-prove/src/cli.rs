@@ -186,4 +186,14 @@ pub struct ProveArgs {
     /// Cache override (see `build-target --cache-dir`).
     #[arg(long)]
     pub cache_dir: Option<PathBuf>,
+
+    /// Mark the bundle `experimental`. True by default while zkpox is
+    /// pre-1.0: the bundle format and verifier semantics may still change,
+    /// so bundles carry a loud "not for real CVD" banner and `zkpox-verify
+    /// --cvd` refuses them. Pass `--experimental=false` once the format is
+    /// frozen and you're minting a real disclosure-grade bundle. Wiring it
+    /// to a flag now (rather than a hardcoded `true`) is what lets the v1.0
+    /// cutover be a single producer-side choice.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub experimental: bool,
 }
