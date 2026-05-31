@@ -21,8 +21,34 @@ set -euo pipefail
 # target #4 (libxml2 CVE-2017-9047, verbatim upstream, buf_size 5000).
 # A change here means the toolchain or the target source moved; that is
 # exactly what this job exists to catch.
-EXPECTED_VK="00d4d1bc687843ea6828abf6a0b71377b6c27895ac2cabf1efa1b0e4b727e982"
+#
+# IMPORTANT — reproducibility is scoped to linux/amd64 in this pinned
+# image. The SP1 guest verifying key is platform-dependent (a host-native
+# `cargo prove build` bakes in toolchain/host state), so the digest
+# differs across OS and CPU arch: macOS arm64 and Linux amd64 produce
+# different VKs from byte-identical source. We therefore define the
+# CANONICAL build environment as this Docker image on linux/amd64 — the
+# same environment GitHub's ubuntu-latest runner provides — and pin the
+# VK it yields. The committed example bundle is minted in that same
+# environment (see .github/workflows/prove.yml). `target_hash` is just
+# sha256(source bytes) and is platform-independent. See docs/REPRODUCING.md.
+EXPECTED_VK="00a5b2cb8f8bfb4ac5c748c9145944debdc101b67f631ea4507a87af189a9bd8"
 EXPECTED_TARGET_HASH="b7b734258247738b4187e3fdf084097564a65a18b6e48715cf4747c64c063009"
+
+# Guard: this canonical VK is only meaningful on linux/amd64. On any
+# other arch the build will legitimately produce a different digest, so
+# fail loudly with an explanation rather than a confusing mismatch.
+HOST_ARCH="$(uname -m 2>/dev/null || echo unknown)"
+case "$HOST_ARCH" in
+    x86_64|amd64) ;;
+    *)
+        printf '\nNOTE: host arch is %s, not x86_64/amd64.\n' "$HOST_ARCH" >&2
+        printf 'The pinned VK (00a5b2cb...) is canonical for linux/amd64 only;\n' >&2
+        printf 'a build here will produce a DIFFERENT (still valid) digest.\n' >&2
+        printf 'Run this in the linux/amd64 reproduce image (or GitHub CI) for the\n' >&2
+        printf 'reproducibility assertion to be meaningful. See docs/REPRODUCING.md.\n' >&2
+        ;;
+esac
 
 TARGET_C="targets/04-libxml2-cve-2017-9047-upstream.c"
 PREDICATE="memory-safety::oob-write"

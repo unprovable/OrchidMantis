@@ -1,14 +1,20 @@
-# Phase 2.5 — Manual end-to-end prove (heavy).
+# Phase 2.5 — Canonical mint (manual, heavy).
 #
-# Produces a real groth16 disclosure bundle for target #4 end-to-end:
-# build the guest, run the ~16M-constraint groth16 prove, then verify.
-# This is the expensive path — it downloads the ~6 GB SP1 circuit
-# artifacts on first use and needs substantial RAM/CPU — so it is
-# manual (workflow_dispatch) only, never on push.
+# This is the "build once, publish the result" job. On GitHub's
+# ubuntu-latest (linux/amd64) — the environment we define as CANONICAL
+# for reproducibility — it:
+#   1. builds the guest in the pinned reproduce image (asserts the VK),
+#   2. runs the real ~16M-constraint groth16 prove,
+#   3. publishes guest.elf + the VK digest + bundle.cbor as artifacts.
 #
-# Use it to mint a fresh artifact (e.g. to refresh examples/ or to
-# rehearse a disclosure), not as a per-commit gate. The per-commit gate
-# is reproduce.yml, which builds + verifies without proving.
+# Heavy: the groth16 prove downloads the ~6 GB SP1 circuit artifacts on
+# first use and is RAM/CPU intensive, so this is manual
+# (workflow_dispatch) only — never on push. The per-commit gate is
+# reproduce.yml, which rebuilds + asserts the VK and verifies the
+# committed bundle without proving.
+#
+# Reproducibility is scoped to linux/amd64 via the pinned image (the SP1
+# guest VK is platform-dependent). See docs/REPRODUCING.md.
 
 name: prove
 
@@ -42,12 +48,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Build the guest (reproduces + asserts the VK as a precondition),
-      # then run the full prove and verify the freshly minted bundle.
-      - name: Build guest + assert VK
-        run: docker run --rm -v "${{ github.workspace }}/out:/out" zkpox-reproduce:ci
+      # Build the guest, assert the VK matches the pinned canonical value,
+      # and copy the guest ELF + VK digest out for publication. Runs the
+      # reproduce script (the image's default CMD) first as the gate, then
+      # copies the cached artifacts to /out.
+      - name: Build guest + assert VK + export ELF
+        run: |
+          mkdir -p out
+          docker run --rm -v "${{ github.workspace }}/out:/out" \
+            --entrypoint bash zkpox-reproduce:ci -c '
+              set -euo pipefail
+              # Gate: reproduce + assert VK == pinned (verify-vk.sh).
+              bash scripts/reproduce/verify-vk.sh
+              # Re-run build-target --json to locate the cached ELF + VK.
+              json=$(target/release/zkpox-prove build-target \
+                --target targets/04-libxml2-cve-2017-9047-upstream.c \
+                --predicate memory-safety::oob-write \
+                --buf-size 5000 --json)
+              echo "$json"
+              elf=$(printf "%s" "$json" | grep -o "\"elf_path\": *\"[^\"]*\"" | sed -E "s/.*\"([^\"]*)\"$/\\1/")
+              vk=$(printf "%s" "$json" | grep -o "[0-9a-f]\{64\}" | head -1)
+              cp "$elf" /out/guest.elf
+              printf "sha256:%s\n" "$vk" > /out/verifier_key_digest.txt
+            '
 
-      - name: Prove (groth16) + verify
+      - name: Prove + verify
         run: |
           docker run --rm -v "${{ github.workspace }}/out:/out" \
             --entrypoint bash zkpox-reproduce:ci -c '
@@ -60,13 +85,19 @@ jobs:
                 --wrap "${{ github.event.inputs.wrap }}" \
                 --provenance targets/04-libxml2-cve-2017-9047-upstream.provenance.json \
                 --no-anchor \
-                --output /out/bundle04.cbor
-              target/release/zkpox-verify /out/bundle04.cbor
+                --output /out/bundle.cbor
+              target/release/zkpox-verify /out/bundle.cbor
             '
 
-      - name: Upload bundle artifact
+      # Publish the canonical artifacts. Download these, drop bundle.cbor
+      # into examples/04-libxml2-cve-2017-9047-upstream/, and (if the VK
+      # changed) update EXPECTED_VK in scripts/reproduce/verify-vk.sh.
+      - name: Upload canonical artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bundle04-${{ github.event.inputs.wrap }}
-          path: out/bundle04.cbor
+          name: zkpox-canonical-${{ github.event.inputs.wrap }}
+          path: |
+            out/bundle.cbor
+            out/guest.elf
+            out/verifier_key_digest.txt
           if-no-files-found: error

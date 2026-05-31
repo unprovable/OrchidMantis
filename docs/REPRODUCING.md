@@ -17,7 +17,7 @@ CVE-2017-9047 extraction.
 |---|---|
 | Target source | `targets/04-libxml2-cve-2017-9047-upstream.c` |
 | `target_hash` | `sha256:b7b734258247738b4187e3fdf084097564a65a18b6e48715cf4747c64c063009` |
-| `verifier_key_digest` | `sha256:00d4d1bc687843ea6828abf6a0b71377b6c27895ac2cabf1efa1b0e4b727e982` |
+| `verifier_key_digest` (linux/amd64) | `sha256:00a5b2cb8f8bfb4ac5c748c9145944debdc101b67f631ea4507a87af189a9bd8` |
 | Predicate | `memory-safety::oob-write` |
 | Buffer size | `5000` (real DTD content-model caller geometry) |
 
