@@ -9,11 +9,11 @@
 //!
 //! ## Wire version
 //!
-//! `BUNDLE_VERSION` is `zkpox-2.0`. v1.0 was the RAPTOR-internal schema
-//! at `gadievron/raptor#470`; this is a clean break — the verifier
-//! refuses anything whose `version` field isn't an exact match. There
-//! is no compatibility shim, deliberately: the v1 bundles depended on
-//! placeholder hashes that v2 rejects on principle.
+//! `BUNDLE_VERSION` is `zkpox-2.0`. It is a clean break from an earlier
+//! internal schema (`v1.0`), with no compatibility shim: the verifier
+//! refuses anything whose `version` field isn't an exact match. This is
+//! deliberate — the v1 bundles depended on placeholder hashes that v2
+//! rejects on principle.
 //!
 //! ## Hashing conventions
 //!

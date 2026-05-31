@@ -55,7 +55,7 @@ use core::ffi::c_uchar;
 use crate::outputs::{CrashOnlyOutputs, OobWriteOutputs};
 use crate::{BufferKind, Predicate, TargetRunner};
 
-/// Default leading-redzone width. Same as RAPTOR's MVP value.
+/// Default leading-redzone width.
 pub const LEADING: usize = 16;
 /// Minimum trailing-redzone width. Grown automatically per witness
 /// length so deep overruns stay inside the scanned window.
@@ -201,8 +201,8 @@ impl Predicate for MemorySafetyOobWrite {
 mod tests {
     use super::*;
 
-    // A trivial in-memory runner that imitates the bug in
-    // RAPTOR's target #1 (no bound check, copies n bytes into buf).
+    // A trivial in-memory runner with a classic unbounded-copy bug
+    // (no bound check, copies n bytes into buf).
     struct BugRunner {
         buf_size: usize,
     }

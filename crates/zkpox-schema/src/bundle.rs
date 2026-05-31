@@ -147,11 +147,36 @@ pub struct VendorEnvelope {
     /// humans grepping the bundle.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub drand_round_min: Option<u64>,
+    /// The exact Drand round the tlock blob is bound to — the round
+    /// whose BLS signature decrypts `ct_k_tlock`. Distinct from
+    /// `drand_round_min` (a floor); this is the concrete target the
+    /// time-lock fires at. Set by the prover from the chosen duration.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub drand_target_round: Option<u64>,
+    /// Hex (64 chars) of the Drand chain hash the `drand_target_round`
+    /// refers to (e.g. quicknet `52db9ba7…`). Recorded so a verifier
+    /// knows which Drand chain to pull the round signature from without
+    /// assuming quicknet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub drand_chain_hash: Option<String>,
     /// The vendor's age recipient string (`age1...`).
     pub vendor_pubkey: String,
     /// `sha256:HEX(vendor_pubkey)`. Trivially recomputable; bundled so
     /// verifiers don't have to know the SHA convention.
     pub vendor_pubkey_fingerprint: String,
+    /// When the vendor key was resolved from a domain rather than passed
+    /// in raw (`zkpox-prove --vendor-from-domain`), the URL it was
+    /// fetched from (e.g. `https://vendor.example/.well-known/security.txt`).
+    /// Lets a verifier trace the recipient back to a published source
+    /// instead of trusting the producer's paste. None when supplied via
+    /// `--vendor-pubkey`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vendor_key_source_url: Option<String>,
+    /// How the vendor key was resolved at `vendor_key_source_url`:
+    /// `"security.txt"` (a `Zkpox-Age-Recipient` field) or
+    /// `"well-known-file"` (a dedicated `.well-known/zkpox-vendor.age.pub`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub vendor_key_source_method: Option<String>,
 }
 
 /// Sigstore Rekor anchor.
@@ -192,6 +217,14 @@ pub struct Researcher {
     /// Optional contact (email, link, profile).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub contact: Option<String>,
+    /// URL where the researcher's public key is published (e.g.
+    /// `https://me.example/.well-known/zkpox-researcher.pub`). Binds
+    /// the signing key to a persistent, published identity rather than
+    /// an anonymous one-off key: a verifier (with `--online`) fetches
+    /// this and confirms the published key matches `pubkey`. None for a
+    /// bare key with no published identity.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub identity_url: Option<String>,
 }
 
 // --- CBOR convenience ---------------------------------------------------
@@ -265,8 +298,14 @@ mod tests {
                 ct_k_age: ByteBuf::from(vec![0; 64]),
                 ct_k_tlock: ByteBuf::from(vec![0; 128]),
                 drand_round_min: Some(12345),
+                drand_target_round: Some(12345),
+                drand_chain_hash: Some("52db9ba7".repeat(8)),
                 vendor_pubkey: "age1qwerty".into(),
                 vendor_pubkey_fingerprint: sha256_bytes(b"age1qwerty"),
+                vendor_key_source_url: Some(
+                    "https://vendor.example/.well-known/security.txt".into(),
+                ),
+                vendor_key_source_method: Some("security.txt".into()),
             },
             timestamp: None,
             researcher: None,
@@ -279,6 +318,106 @@ mod tests {
         let bytes = to_cbor(&b).unwrap();
         let decoded = from_cbor(&bytes).unwrap();
         assert_eq!(b, decoded);
+    }
+
+    /// Phase 4 — schema freeze guard. The on-wire format is frozen at
+    /// `BUNDLE_VERSION`; any change to a struct's fields (add / remove /
+    /// rename / reorder) must be a deliberate, version-bumped event, not
+    /// a silent drift that invalidates already-published bundles.
+    ///
+    /// This pins three things that together make drift loud:
+    ///   1. `BUNDLE_VERSION` is exactly `zkpox-2.0`.
+    ///   2. Encoding is byte-stable (encode → decode → encode identical),
+    ///      so the canonical bytes a bundle hashes/anchors over are
+    ///      deterministic.
+    ///   3. The exact CBOR map key sets of the top-level bundle and of
+    ///      the trust-bearing sub-structs (`VendorEnvelope`, `Researcher`)
+    ///      — `serde` emits a struct as a CBOR map keyed by field name, so
+    ///      adding/removing/renaming a field changes this set and fails
+    ///      the test. A reviewer who intends the change updates the
+    ///      expected set here AND bumps `BUNDLE_VERSION`.
+    #[test]
+    fn schema_is_frozen_at_v2_0() {
+        use ciborium::Value;
+
+        // (1) Version pin.
+        assert_eq!(
+            BUNDLE_VERSION, "zkpox-2.0",
+            "BUNDLE_VERSION changed — this is a wire-format break; bump deliberately and update \
+             the freeze test + docs/BUNDLE-FORMAT.md"
+        );
+
+        // (2) Byte-stable round trip.
+        let b = fake_bundle();
+        let bytes = to_cbor(&b).unwrap();
+        let reencoded = to_cbor(&from_cbor(&bytes).unwrap()).unwrap();
+        assert_eq!(bytes, reencoded, "CBOR encoding is not byte-stable across a round trip");
+
+        // (3) Frozen key sets. Decode to a generic CBOR Value and read
+        // the map keys at each level. Nested fns (not closures) so they
+        // can carry the lifetime on `get`.
+        fn keys(v: &Value) -> Vec<String> {
+            let mut ks: Vec<String> = match v {
+                Value::Map(m) => m
+                    .iter()
+                    .filter_map(|(k, _)| match k {
+                        Value::Text(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => panic!("expected a CBOR map"),
+            };
+            ks.sort();
+            ks
+        }
+        fn get<'a>(v: &'a Value, key: &str) -> &'a Value {
+            match v {
+                Value::Map(m) => m
+                    .iter()
+                    .find(|(k, _)| matches!(k, Value::Text(s) if s == key))
+                    .map(|(_, val)| val)
+                    .unwrap_or_else(|| panic!("missing key {key:?}")),
+                _ => panic!("expected a CBOR map"),
+            }
+        }
+        let val: Value = ciborium::de::from_reader(&bytes[..]).unwrap();
+
+        // Top-level (fake_bundle has no timestamp/researcher, both
+        // skip_serializing_if=None, so they're absent here — that's the
+        // frozen shape for a no-anchor, no-researcher bundle).
+        assert_eq!(
+            keys(&val),
+            vec![
+                "backend",
+                "experimental",
+                "predicate",
+                "proof",
+                "target",
+                "vendor_envelope",
+                "version",
+            ],
+            "top-level bundle key set changed"
+        );
+
+        // VendorEnvelope — the Phase-3 trust-source + Phase-3 drand fields
+        // must stay frozen.
+        assert_eq!(
+            keys(get(&val, "vendor_envelope")),
+            vec![
+                "aes_blob",
+                "ct_k_age",
+                "ct_k_tlock",
+                "drand_chain_hash",
+                "drand_round_min",
+                "drand_target_round",
+                "scheme",
+                "vendor_key_source_method",
+                "vendor_key_source_url",
+                "vendor_pubkey",
+                "vendor_pubkey_fingerprint",
+            ],
+            "VendorEnvelope key set changed"
+        );
     }
 
     #[test]
@@ -313,6 +452,7 @@ mod tests {
                 pubkey: ByteBuf::from(vec![1; 32]),
                 signature_over_bundle: ByteBuf::from(vec![2; 64]),
                 contact: Some("me@example.com".into()),
+                identity_url: Some("https://me.example/.well-known/zkpox-researcher.pub".into()),
             }),
             ..b
         };

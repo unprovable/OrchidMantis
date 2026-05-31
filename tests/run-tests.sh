@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# zkpox regression sweep against the lifted RAPTOR witness corpus.
+# zkpox regression sweep against the witness corpus.
 #
 # Usage:
 #   tests/run-tests.sh                       # execute-mode, full corpus

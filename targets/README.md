@@ -1,9 +1,8 @@
 # targets/
 
 Example freestanding C targets the standalone tool's `static-c`
-backend can ship proofs against. Lifted from RAPTOR's `core/zkpox/`
-MVP, with one rename: each target exposes its bug in a function
-called `zkpox_victim` rather than `zkpox_target_NN_victim`, because
+backend can ship proofs against. Each target exposes its bug in a
+function called `zkpox_victim` (not `zkpox_target_NN_victim`), because
 each target compiles into a freshly built SP1 guest ELF — there is
 no longer a runtime dispatch over multiple targets.
 

@@ -175,6 +175,19 @@ Strict mode fails on any deferred or unverifiable check. `--target
 <local path>` triggers the re-hash check so you confirm the bundle
 binds to the source you intended.
 
+Two trust-root flags matter at acceptance time (Phases 3–4):
+
+- `--online` re-fetches the bundle's recorded trust sources and confirms
+  they still match: the vendor key at `vendor_key_source_url` and the
+  researcher key at `researcher.identity_url`. The Rekor SET is checked
+  against the pinned public Sigstore key by default (`--rekor-pubkey`
+  overrides).
+- `--cvd` is the disclosure-grade gate: it **refuses** a bundle marked
+  `experimental` (pre-1.0 bundles are experimental by default). Use it
+  when this verification is the acceptance decision for a real
+  disclosure; omit it for triage, where the experimental banner is just a
+  warning.
+
 ## Researcher attribution
 
 zkpox supports three attribution modes:
@@ -201,7 +214,7 @@ not who signed the Rekor entry.
 
 Producing a zkpox proof requires running the exploit. In most
 jurisdictions this is "access" under the relevant computer-misuse
-law. The Disclosure Engineer persona (RAPTOR-only) is a useful
+law. A disclosure-engineer workflow is a useful
 draft-writing tool for citing safe harbors: vendor CVD policy, EU CRA
 Article 13, the recent Belgian CVD framework, the US DMCA §1201
 security-research exemption, the EU Cybercrime Directive amendments

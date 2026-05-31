@@ -107,6 +107,29 @@ pub fn rekor_url() -> String {
     std::env::var("ZKPOX_REKOR_URL").unwrap_or_else(|_| DEFAULT_REKOR_URL.to_string())
 }
 
+/// The pinned public Sigstore Rekor v1 log signing key (ECDSA P-256),
+/// vendored at `assets/rekor.pub`. Lets `zkpox-verify` check a bundle's
+/// Signed Entry Timestamp on the happy path without a hand-supplied
+/// `--rekor-pubkey`. The key is the one the Sigstore TUF root
+/// distributes for `rekor.sigstore.dev`; see
+/// `assets/rekor.pub.provenance.md` for the fingerprint and the
+/// audit/refresh procedure (we pin rather than resolve TUF in-process to
+/// keep the reproducible build image lean — `tough` would drag in a
+/// cmake/aws-lc C build).
+pub const DEFAULT_REKOR_PUBKEY_PEM: &str = include_str!("../assets/rekor.pub");
+
+/// SPKI-DER sha256 of `DEFAULT_REKOR_PUBKEY_PEM`. A self-check guards
+/// against the asset being edited without updating provenance.
+pub const REKOR_PUBKEY_SHA256: &str =
+    "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d";
+
+/// The pinned Rekor log public key as PEM bytes, for the verifier's
+/// default SET-check path. `None` is never returned today, but the
+/// signature leaves room for a future "no pinned key" build.
+pub fn default_rekor_pubkey_pem() -> &'static [u8] {
+    DEFAULT_REKOR_PUBKEY_PEM.as_bytes()
+}
+
 // --- Rekor REST entry (the slice we use) -------------------------------
 
 /// One Rekor log entry, parsed from the v1 REST shape. Rekor returns
@@ -627,6 +650,33 @@ pub fn check_set_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pinned Rekor key must parse as an ECDSA P-256 SPKI, and the
+    /// SPKI DER decoded from the PEM must hash to the recorded
+    /// fingerprint — guards against the asset being edited without
+    /// updating provenance / the const. We hash the DER recovered from
+    /// the PEM body directly (matching `openssl pkey -pubin -outform
+    /// DER`), avoiding an encode round-trip.
+    #[test]
+    fn pinned_rekor_key_matches_fingerprint() {
+        use p256::pkcs8::DecodePublicKey;
+        let pem = std::str::from_utf8(default_rekor_pubkey_pem()).unwrap();
+        // Must parse as a real P-256 verifying key.
+        p256::ecdsa::VerifyingKey::from_public_key_pem(pem)
+            .expect("pinned rekor.pub must be a P-256 SPKI PEM");
+        // DER = base64-decode of the PEM body between the framing lines.
+        let der: Vec<u8> = pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .flat_map(|l| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(l.trim().as_bytes())
+                    .expect("PEM body base64")
+            })
+            .collect();
+        let fp = hex::encode(Sha256::digest(&der));
+        assert_eq!(fp, REKOR_PUBKEY_SHA256, "pinned Rekor key fingerprint drift");
+    }
 
     /// Build a tiny 4-leaf Merkle tree, prove inclusion of leaf 2,
     /// and verify the proof.

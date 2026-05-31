@@ -134,17 +134,6 @@ flowchart TD
 | [`docs/DISCLOSURE-WORKFLOW.md`](docs/DISCLOSURE-WORKFLOW.md) | Using zkpox for real CVD. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Layer 2 / Layer 3 plans; predicate roadmap. |
 
-## Origin
-
-zkpox was extracted from
-[gadievron/raptor#470](https://github.com/gadievron/raptor/pull/470)
-and rebuilt as a standalone framework. It retains the predicate-library
-abstraction and the disclosure-envelope design from that PR, but the
-binding hashes are no longer placeholders, the verifier actually
-verifies the STARK, the Rekor inclusion proof, and (given the log's
-public key) the Rekor Signed Entry Timestamp, and the C-source
-target is generic rather than three hardcoded examples.
-
 ## Acknowledgements
 
 This work builds directly on:
@@ -161,8 +150,9 @@ This work builds directly on:
 - **Drand** — distributed randomness beacon used for the time-lock.
 - **Sigstore Rekor** — append-only transparency log for the timestamp anchor.
 - **age** and **tlock** — public-key and time-lock encryption tools.
-- **RAPTOR** — Gadi Evron's agentic security framework, which is
-  where this code lived before being extracted.
+
+Derived from prior work in
+[gadievron/raptor#470](https://github.com/gadievron/raptor/pull/470).
 
 ## License
 

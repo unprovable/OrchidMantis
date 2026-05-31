@@ -5,6 +5,13 @@ Written for engineers and security reviewers who are not cryptographers.
 slash-command output ever claims more than this document, treat the
 discrepancy as a wrapper bug, not a doc bug.
 
+> **Status: pre-1.0, experimental by default.** Bundles are minted with
+> `experimental = true`; `zkpox-verify` banners them and, under `--cvd`
+> (the disclosure-grade gate), refuses them. The `zkpox-2.0` wire format
+> is frozen and regression-tested (`BUNDLE-FORMAT.md`), so the v1.0
+> cutover is a deliberate `--experimental=false` re-mint, not a format
+> change.
+
 This file is adapted from RAPTOR PR #470's `docs/zkpox-scope.md`. The shape
 of the scope claim is the same — only the implementation details below have
 shifted now that the placeholder hashes are real bindings and the verifier
