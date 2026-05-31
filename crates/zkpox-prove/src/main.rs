@@ -19,10 +19,10 @@
 //!     7. Optionally attach a researcher signature.
 //!     8. Emit `bundle.cbor`.
 //!
-//! Real binding hashes from day one — none of the
-//! "placeholder-vk-1.5" / "harness-1.5" sha256s from RAPTOR's PR.
-//! The `proof.verifier_key_digest` is `sp1-sdk`'s actual VK digest
-//! and `target.hash` is the sha256 of the target source bytes.
+//! Real binding hashes from day one — no placeholder
+//! "placeholder-vk-1.5" / "harness-1.5" sha256s. The
+//! `proof.verifier_key_digest` is `sp1-sdk`'s actual VK digest and
+//! `target.hash` is the sha256 of the target source bytes.
 
 mod build;
 mod cli;

@@ -1,6 +1,6 @@
 //! # zkpox-envelope
 //!
-//! Pure-Rust port of RAPTOR's `packages/zkpox/envelope.py`. No
+//! Pure-Rust layered envelope (AES-256-GCM + age + Drand tlock). No
 //! subprocess shell-outs to `age` / `tle` binaries — instead, the
 //! `age` Rust crate for the vendor recipient path and `tlock_age` for
 //! the Drand time-lock path.
@@ -34,8 +34,7 @@
 //!
 //! Hardcoded to Drand's **quicknet** chain (3-second period,
 //! unchained BLS-on-G1 signing). This is the network the `tle` CLI
-//! defaults to, and matches what RAPTOR's MVP used. The chain
-//! identifiers are public:
+//! defaults to. The chain identifiers are public:
 //!
 //! - `chain_hash`: `52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971`
 //! - `period`: 3 seconds

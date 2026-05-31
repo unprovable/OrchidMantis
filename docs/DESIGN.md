@@ -146,7 +146,7 @@ content to the right downstream artifact.
 A `--strict` verify performs eight distinct checks (see SCOPE.md §"How
 to read a bundle as a non-cryptographer"). The trust assumptions are
 spelled out in THREAT-MODEL.md. The architectural commitment is that
-all eight checks run **without any RAPTOR or zkpox-specific oracle** —
+all eight checks run **without any zkpox-specific oracle** —
 the verifier needs:
 
 - The bundle CBOR.

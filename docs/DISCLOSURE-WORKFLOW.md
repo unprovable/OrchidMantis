@@ -214,7 +214,7 @@ not who signed the Rekor entry.
 
 Producing a zkpox proof requires running the exploit. In most
 jurisdictions this is "access" under the relevant computer-misuse
-law. The Disclosure Engineer persona (RAPTOR-only) is a useful
+law. A disclosure-engineer workflow is a useful
 draft-writing tool for citing safe harbors: vendor CVD policy, EU CRA
 Article 13, the recent Belgian CVD framework, the US DMCA §1201
 security-research exemption, the EU Cybercrime Directive amendments
