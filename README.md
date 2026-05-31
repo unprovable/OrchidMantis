@@ -2,6 +2,8 @@
 
 ## A Framework for ZKPoX — Zero-Knowledge Proofs of Exploit
 
+![Orchid Mantis](orchid-mantis-600x244.jpg)
+
 > **Status: experimental (v0.1).** Bundle format, predicate library, and
 > verifier semantics are not yet stable. Do not use for real CVE
 > disclosure until v1.0 ships. See `docs/SCOPE.md` for the precise
