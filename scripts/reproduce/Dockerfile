@@ -32,6 +32,12 @@ FROM rust:${RUST_VERSION}-bookworm
 # pin needs bumping: --build-arg SP1UP_VERSION=vX.Y.Z
 ARG SP1UP_VERSION=v6.1.0
 
+# Go toolchain for sp1-recursion-gnark-ffi: its build.rs shells out to
+# `go build` to compile the gnark Groth16 verifier into a static
+# library (libsp1gnark.a). Pinned for reproducibility; Debian's
+# golang-go is too old for SP1's gnark.
+ARG GO_VERSION=1.23.4
+
 # --- System cross-compile toolchain for the freestanding C target -----
 # Stock LLVM is multi-target, so `clang --target=riscv64-...` works
 # without a separate RISC-V cross GCC. lld + llvm give us a linker and
@@ -47,6 +53,15 @@ RUN apt-get update \
         protobuf-compiler \
         libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# --- Go toolchain (for sp1-recursion-gnark-ffi's libsp1gnark.a) -------
+# Installed from the official tarball (not apt) so the version is pinned
+# and recent enough for SP1's gnark FFI. Put it on PATH for the build.
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+        -o /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # build.rs picks Homebrew clang on macOS; on Linux it falls back to
 # PATH `clang`. Make the archiver explicit too (build.rs probes a list,
@@ -69,7 +84,7 @@ COPY . /src
 RUN cargo build --release --locked -p zkpox-prove -p zkpox-verify
 
 # Sanity: the toolchain is present and the right version.
-RUN cargo prove --version && rustc --version && clang --version | head -1
+RUN cargo prove --version && rustc --version && go version && clang --version | head -1
 
 ENTRYPOINT []
 CMD ["bash", "scripts/reproduce/verify-vk.sh"]
