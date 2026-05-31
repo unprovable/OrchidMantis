@@ -2,13 +2,27 @@
 
 A disclosure bundle is only as trustworthy as a third party's ability
 to **independently reproduce** its cryptographic identity. This document
-shows how anyone on a clean machine can:
+shows how anyone can:
 
-1. Rebuild the guest from the pinned toolchain and confirm the
+1. Rebuild the guest in the **canonical environment** and confirm the
    verifying-key digest comes out **byte-for-byte identical** to the one
    the bundle records, and
 2. Verify the wrapped groth16 proof **without** the guest ELF or the
    multi-GB SP1 proving artifacts.
+
+> **Reproducibility is scoped to one canonical environment: the pinned
+> `scripts/reproduce/Dockerfile` on linux/amd64** (the same environment
+> GitHub's `ubuntu-latest` runner provides). The SP1 guest verifying key
+> is **platform-dependent** — a host-native `cargo prove build` bakes
+> toolchain/host state into the ELF, so the digest legitimately differs
+> across OS and CPU architecture (e.g. macOS arm64 vs Linux amd64 yield
+> different VKs from byte-identical source). SP1's own `--docker` mode,
+> which would unify across hosts, is incompatible with how this project
+> injects the C target into the guest, so we instead fix the builder.
+> `target_hash` is `sha256(source bytes)` and **is** platform-independent.
+> The canonical VK + example bundle are minted by
+> `.github/workflows/prove.yml` on `ubuntu-latest` and re-asserted on
+> every push by `.github/workflows/reproduce.yml`.
 
 The worked example is target #4 — the verbatim upstream libxml2
 CVE-2017-9047 extraction.
