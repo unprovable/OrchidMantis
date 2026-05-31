@@ -24,8 +24,7 @@
 //! and Apple's bundled clang lacks the RISC-V backend. Manual clang
 //! invocation with explicit `--target=riscv64-unknown-none-elf
 //! -march=rv64im -mabi=lp64` is shorter than fighting `cc-rs`'s
-//! heuristics. This mirrors RAPTOR's MVP build script (RAPTOR
-//! identified the same problem during Phase 0).
+//! heuristics.
 
 use std::path::PathBuf;
 use std::process::Command;

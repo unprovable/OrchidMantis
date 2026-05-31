@@ -140,9 +140,7 @@ pub fn round_at(unix_seconds: u64) -> u64 {
 
 /// Parse a Go-style duration string ("90d", "30m", "8s") into
 /// seconds. Subset of Go's `time.ParseDuration` — enough to cover
-/// "Ns", "Nm", "Nh", "Nd". RAPTOR's wrapper accepts these same units
-/// so a producer migrating across the two tools sees identical
-/// behaviour.
+/// "Ns", "Nm", "Nh", "Nd".
 pub fn parse_duration_seconds(s: &str) -> Option<u64> {
     let s = s.trim();
     let (num_part, unit) = match s.chars().last()? {

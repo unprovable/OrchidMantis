@@ -31,10 +31,9 @@
 //! in the (target_hash, predicate_id) pair that uniquely identifies
 //! the guest ELF.
 //!
-//! This is a deliberate departure from RAPTOR's MVP, which prepends
-//! a `target_id` byte. There, the guest dispatched at runtime among
-//! three baked-in targets; here, the guest is built fresh per
-//! (target, predicate) pair, so no dispatch is needed.
+//! There is no `target_id` framing byte: the guest is built fresh per
+//! (target, predicate) pair, so it never dispatches among targets at
+//! runtime and the witness needs no discriminator prefix.
 
 use std::path::{Path, PathBuf};
 

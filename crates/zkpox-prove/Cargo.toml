@@ -37,8 +37,8 @@ ed25519-dalek      = { version = "2", features = ["rand_core"] }
 rand_core          = { version = "0.6", features = ["getrandom"] }
 
 # SP1 host SDK. Heavy: pulls Groth16 wrap circuitry on first use.
-# Feature `native-gnark` matches RAPTOR's pin; `blocking` keeps the
-# host single-threaded so we don't need a separate runtime.
+# `blocking` keeps the host single-threaded so we don't need a separate
+# async runtime.
 sp1-sdk = { workspace = true }
 
 # Tokio is required to drive `sp1_sdk::install::try_install_circuit_artifacts`,
